@@ -1,0 +1,4 @@
+batch_size: 256
+data_dir: .
+learning_rate: 0.001
+model_name: LeNet5_v1

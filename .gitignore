@@ -1,0 +1,21 @@
+# Virtual environments
+.venv/
+**/.venv/
+venv/
+
+# Datasets
+MNIST-ltng/
+FashionMNIST/FashionMNIST/
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# Project-specific
+test/
+MNIST-ltng/
+CNN/cache/
+PTB-XL-assessment/vis/
+
+# Ignore images generated or added to training logs
+FashionMNIST/logs/**/*.png

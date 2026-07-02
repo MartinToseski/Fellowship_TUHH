@@ -1,0 +1,9 @@
+pandas
+numpy
+torch
+torchvision
+torchaudio
+pytorch-lightning
+torchmetrics
+seaborn
+ipython
