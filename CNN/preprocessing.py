@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import wfdb
@@ -8,9 +7,6 @@ import pickle
 
 
 DATA_PATH = "../../data/ptb-xl/"
-CACHE_X_PATH = "./cache/X.npy"
-CACHE_Y_PATH = "./cache/Y.pkl"
-sampling_rate = 100
 
 
 def load_raw_data(df, sampling_rate, path):
@@ -22,7 +18,10 @@ def load_raw_data(df, sampling_rate, path):
     return data
 
 
-def load_dataset():
+def load_dataset(sampling_rate):
+    CACHE_X_PATH = f"./cache/X_{sampling_rate}.npy"
+    CACHE_Y_PATH = f"./cache/Y_{sampling_rate}.pkl"
+
     # ---------- LOAD CACHE IF IT EXISTS ----------
     if os.path.exists(CACHE_X_PATH) and os.path.exists(CACHE_Y_PATH):
         print("Loading cached dataset...", "\n")
@@ -71,8 +70,8 @@ def load_dataset():
     return X, Y
 
 
-def split_data():
-    X, Y = load_dataset()
+def split_data(sampling_rate):
+    X, Y = load_dataset(sampling_rate)
 
     # Split data into train and test
     val_fold = 9
@@ -94,3 +93,12 @@ def split_data():
     y_test = Y.loc[test_mask, 'diagnostic_superclass']
 
     return X_train, y_train, X_val, y_val, X_test, y_test
+
+
+def per_lead_global_normalization(X_train, X_val, X_test):
+    mean = X_train.mean(axis=(0,1), keepdims=True)
+    std = X_train.std(axis=(0,1), keepdims=True) + 1e-8
+    X_train = (X_train - mean) / std
+    X_val = (X_val - mean) / std
+    X_test = (X_test - mean) / std
+    return X_train, X_val, X_test
