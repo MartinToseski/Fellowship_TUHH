@@ -89,25 +89,30 @@ def plot_metric(df, metric, output_dir):
 def plot_all_metrics(log_path):
     log_path = Path(log_path)
     df = pd.read_csv(log_path)
-
     for metric in METRICS:
         plot_metric(df, metric, log_path.parent)
 
 
 def print_clean_report(log_path):
+    lines = []
+
+    def log(line=""):
+        print(line)
+        lines.append(line)
+
     log_path = Path(log_path)
     df = pd.read_csv(log_path)
     latest = df.dropna(subset=["test_acc"]).iloc[-1]
 
-    print("\n" + "="*60)
-    print("FINAL TEST REPORT")
-    print("="*60)
+    log("\n" + "="*60)
+    log("FINAL TEST REPORT")
+    log("="*60)
 
-    print(f"\nOverall:")
-    print(f"  Accuracy: {latest['test_acc']:.4f}")
-    print(f"  Loss:     {latest['test_loss']:.4f}")
+    log(f"\nOverall:")
+    log(f"  Accuracy: {latest['test_acc']:.4f}")
+    log(f"  Loss:     {latest['test_loss']:.4f}")
 
-    print("\nPer-class confusion matrix:")
+    log("\nPer-class confusion matrix:")
     for i, cls in enumerate(SUPERCLASSES):
         tp = latest.get(f"test_TP_{cls}", np.nan)
         fp = latest.get(f"test_FP_{cls}", np.nan)
@@ -122,26 +127,29 @@ def print_clean_report(log_path):
         fp_p = (fp / neg_total * 100) if neg_total > 0 else np.nan
         tn_p = (tn / neg_total * 100) if neg_total > 0 else np.nan
 
-        print(f"CONFUSION MATRIX - {cls}")
-        print("                                    Predicted")
-        print("                            Positive          Negative ")
-        print(f"Actual   Positive    {tp:6.0f} ({tp_p:<5.1f}%)   {fn:6.0f} ({fn_p:<5.1f}%)")
-        print(f"         Negative    {fp:6.0f} ({fp_p:<5.1f}%)   {tn:6.0f} ({tn_p:<5.1f}%)")
-        print()
-        print()
+        log(f"CONFUSION MATRIX - {cls}")
+        log("                                    Predicted")
+        log("                            Positive          Negative ")
+        log(f"Actual   Positive    {tp:6.0f} ({tp_p:<5.1f}%)   {fn:6.0f} ({fn_p:<5.1f}%)")
+        log(f"         Negative    {fp:6.0f} ({fp_p:<5.1f}%)   {tn:6.0f} ({tn_p:<5.1f}%)")
+        log()
+        log()
 
-    print("Per-class metrics:")
-    print(f"Superclass   Precision     Recall       F1 Score        AUC")
+    log("Per-class metrics:")
+    log(f"Superclass   Precision     Recall       F1 Score        AUC")
     for cls in SUPERCLASSES:
         p = latest.get(f"test_precision_{cls}", np.nan)
         r = latest.get(f"test_recall_{cls}", np.nan)
         f1 = latest.get(f"test_f1_{cls}", np.nan)
         auc = latest.get(f"test_auc_{cls}", np.nan)
-        print(f"  {cls:5s} |      {p:.3f}        {r:.3f}         {f1:.3f}        {auc:.3f}")
-    print()
+        log(f"  {cls:5s} |      {p:.3f}        {r:.3f}         {f1:.3f}        {auc:.3f}")
+    log()
 
-    print("Macro:")
-    print(f"  F1 macro:  {latest.get('test_f1_macro', np.nan):.4f}")
-    print(f"  AUC macro: {latest.get('test_auc_macro', np.nan):.4f}")
+    log("Macro:")
+    log(f"  F1 macro:  {latest.get('test_f1_macro', np.nan):.4f}")
+    log(f"  AUC macro: {latest.get('test_auc_macro', np.nan):.4f}")
+    log("="*60 + "\n")
 
-    print("="*60 + "\n")
+    report_path = log_path.parent / "report.txt"
+    with open(report_path, "w") as f:
+        f.write("\n".join(lines))

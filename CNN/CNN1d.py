@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 
-from sklearn.preprocessing import MultiLabelBinarizer
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
@@ -27,10 +26,12 @@ from torchvision import transforms
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
+from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, confusion_matrix
+from itertools import product
 
 from pytorch_lightning.loggers import CSVLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 from preprocessing import split_data, per_lead_global_normalization
 from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
@@ -63,15 +64,26 @@ class Config:
 
 # ---------- LIGHTNING DATASET ----------
 class ECGDataset(Dataset):
-    def __init__(self, X, y):
+    def __init__(self, X, y, augmentation=None):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32)
+        self.augmentation = augmentation
 
     def __len__(self):
         return len(self.X)
     
     def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+        x = self.X[idx].clone()
+        y = self.y[idx]
+
+        if self.augmentation == "time_shift":
+            shift = np.random.randint(-50, 51)
+            x = torch.roll(x, shifts=shift, dims=1)
+        elif self.augmentation == "gaussian_noise":
+            noise = torch.randn_like(x) * 0.01
+            x = x + noise
+
+        return x, y
 
 
 # ---------- LIGHTNING DATA MODULE ----------
@@ -105,7 +117,7 @@ class ECGDataModule(pl.LightningDataModule):
         X_val = np.transpose(X_val, (0, 2, 1))
         X_test = np.transpose(X_test, (0, 2, 1))
 
-        self.train_dataset = ECGDataset(X_train, y_train)
+        self.train_dataset = ECGDataset(X_train, y_train, augmentation=self.config.augmentation)
         self.val_dataset = ECGDataset(X_val, y_val)
         self.test_dataset = ECGDataset(X_test, y_test)
 
@@ -343,28 +355,73 @@ class ECGLitModule(pl.LightningModule):
 
 
 # ---------- LIGHTNING TRAINER ----------
-config = Config(model_name="LeNet-5", max_epochs=1)
-model = ECGLitModule(config)
-data = ECGDataModule(config)
+def run_experiment(config):
+    model = ECGLitModule(config)
+    data = ECGDataModule(config)
 
-version = (
-    f"ch{'-'.join(map(str, config.conv_dims))}"
-    f"_lr{config.learning_rate}"
-    f"_rate{config.sampling_rate}"
-    f"_epochs{config.max_epochs}"
-    f"_{config.optimizer}"
-    f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-)
+    version = (
+        f"ch{'-'.join(map(str, config.conv_dims))}"
+        f"_lr{config.learning_rate}"
+        f"_rate{config.sampling_rate}"
+        f"_epochs{config.max_epochs}"
+        f"_{config.optimizer}"
+        f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
 
-logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
-checkpoint = ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1, filename="{epoch}-{val_loss:.4f}")
+    logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
+    checkpoint = ModelCheckpoint(monitor="val_auc_macro", mode="max", save_top_k=1, filename="{epoch}-{val_auc_macro:.4f}")
+    early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=5, min_delta=0.001, verbose=True)
 
-trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint], devices=1)
-trainer.fit(model, datamodule=data)
-trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=1)
+    trainer.fit(model, datamodule=data)
+    trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
-metrics_path = Path(logger.log_dir) / "metrics.csv"
-print(Path(logger.log_dir))
-print(metrics_path)
-plot_all_metrics(metrics_path)
-print_clean_report(metrics_path)
+    metrics_path = Path(logger.log_dir) / "metrics.csv"
+    return metrics_path
+
+
+# ---------- GRID SEARCH ----------
+grid = {
+    "learning_rate": [1e-3, 1e-4],
+    "batch_size": [64, 256],
+    "optimizer": ["adam", "sgd"],
+    "conv_dims": [
+        (32, 64),
+        (32, 64, 128),
+        (64, 128, 256)
+    ],
+    "weight_decay": [0.0, 1e-4],
+    "augmentation": [None, "time_shift", "gaussian_noise"]
+}
+
+keys = grid.keys()
+values = grid.values()
+combinations = list(product(*values))
+
+results = []
+
+for combo in combinations:
+    params = dict(zip(keys, combo))
+
+    config = Config(
+        model_name="LeNet5",
+        learning_rate=params["learning_rate"],
+        batch_size=params["batch_size"],
+        optimizer=params["optimizer"],
+        conv_dims=params["conv_dims"],
+        weight_decay=params["weight_decay"],
+        augmentation=params["augmentation"],
+        max_epochs=50
+    )
+
+    print("=" * 80)
+    print("!!!")
+    print("NEW CONFIG:")
+    print("!!!")
+    print(config)
+    print()
+    print()
+
+    metrics_path = run_experiment(config)
+    plot_all_metrics(metrics_path)
+    print_clean_report(metrics_path)
