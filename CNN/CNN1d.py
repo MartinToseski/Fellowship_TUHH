@@ -22,15 +22,18 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
-from torchmetrics.classification import MultilabelAccuracy
+from torchmetrics.classification import MultilabelAccuracy, MultilabelAUROC, MultilabelF1Score, MultilabelPrecision, MultilabelRecall, MultilabelConfusionMatrix
 from torchvision import transforms
 from dataclasses import dataclass
+from pathlib import Path
+from datetime import datetime
+from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, confusion_matrix
 
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from preprocessing import split_data, per_lead_global_normalization
-from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics
+from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
@@ -55,6 +58,8 @@ class Config:
     max_epochs: int = 3
     threshold: float = 0.5
 
+    conv_dims: tuple = (32, 64, 128)
+
 
 # ---------- LIGHTNING DATASET ----------
 class ECGDataset(Dataset):
@@ -77,14 +82,14 @@ class ECGDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         X_train, y_train, X_val, y_val, X_test, y_test = split_data(self.config.sampling_rate)
-        print_all_sizes("Initial", X_train, y_train, X_val, y_val, X_test, y_test)
+        #print_all_sizes("Initial", X_train, y_train, X_val, y_val, X_test, y_test)
 
         # remove epty labels
         X_train, y_train = remove_empty_diagnosis(X_train, y_train)
         X_val, y_val = remove_empty_diagnosis(X_val, y_val)
         X_test, y_test = remove_empty_diagnosis(X_test, y_test)
-        print_all_sizes("After removing", X_train, y_train, X_val, y_val, X_test, y_test)
-        print_superclass_distribution_statistics(X_train, y_train, X_val, y_val, X_test, y_test)
+        #print_all_sizes("After removing", X_train, y_train, X_val, y_val, X_test, y_test)
+        #print_superclass_distribution_statistics(X_train, y_train, X_val, y_val, X_test, y_test)
 
         # label encoding
         mlb = MultiLabelBinarizer(classes=SUPERCLASSES)
@@ -127,28 +132,27 @@ class ECGDataModule(pl.LightningDataModule):
 
 
 # ---------- LIGHTNING MODULE ----------
-LENET_ARCH = [
-    (32, 7, 3),   # conv1
-    (64, 5, 2),   # conv2
-    (128, 3, 1),  # conv3
-]
-
 class ECGLitModule(pl.LightningModule):
-    def __init__(self, config: Config, architecture):
+    def __init__(self, config: Config):
         super().__init__()
         self.config = config
-        self.architecture = architecture
         self.model_name = config.model_name
+
+        self.val_probs = []
+        self.val_targets = []
+
+        self.test_probs = []
+        self.test_targets = []
         
         # Build CNN
         layers = []
         in_ch = 12
-        for out_ch, k, p in architecture:
+        for out_ch in config.conv_dims:
             layers += [
-                nn.Conv1d(in_ch, out_ch, kernel_size=k, padding=p),
+                nn.Conv1d(in_ch, out_ch, kernel_size=3, padding=1),
                 nn.BatchNorm1d(out_ch),
                 nn.ReLU(),
-                nn.MaxPool1d(2)
+                nn.MaxPool1d(kernel_size=2, stride=2)
             ]
             in_ch = out_ch
 
@@ -161,12 +165,44 @@ class ECGLitModule(pl.LightningModule):
         self.loss_fn = nn.BCEWithLogitsLoss()
 
         # Multi-label safe metrics
-        self.train_acc = MultilabelAccuracy(num_labels=config.num_classes, threshold=config.threshold)
-        self.val_acc = MultilabelAccuracy(num_labels=config.num_classes, threshold=config.threshold)
-        self.test_acc = MultilabelAccuracy(num_labels=config.num_classes, threshold=config.threshold)
+        self.train_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
 
-        # Architecture logging
-        self.save_hyperparameters(ignore=["architecture", "config"])
+        self.val_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
+        self.val_auc = MultilabelAUROC(num_labels=5, average=None)
+        self.val_auc_macro = MultilabelAUROC(num_labels=5, average="macro")
+        self.val_f1 = MultilabelF1Score(num_labels=5, average=None, threshold=config.threshold)
+        self.val_f1_macro = MultilabelF1Score(num_labels=5, average="macro", threshold=config.threshold)
+        self.val_precision = MultilabelPrecision(num_labels=5, average=None, threshold=config.threshold)
+        self.val_recall = MultilabelRecall(num_labels=5, average=None, threshold=config.threshold)
+
+        self.test_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
+        self.test_auc = MultilabelAUROC(num_labels=5, average=None)
+        self.test_auc_macro = MultilabelAUROC(num_labels=5, average="macro")
+        self.test_f1_macro = MultilabelF1Score(num_labels=5, average="macro", threshold=config.threshold)
+
+        self.test_f1 = MultilabelF1Score(
+            num_labels=5,
+            average=None,
+            threshold=self.config.threshold
+        )
+
+        self.test_precision = MultilabelPrecision(
+            num_labels=5,
+            average=None,
+            threshold=self.config.threshold
+        )
+
+        self.test_recall = MultilabelRecall(
+            num_labels=5,
+            average=None,
+            threshold=self.config.threshold
+        )
+        
+        self.test_cm = MultilabelConfusionMatrix(num_labels=5, threshold=config.threshold)
+        self.val_cm = MultilabelConfusionMatrix(num_labels=5, threshold=config.threshold)
+
+        # Hyperparameters logging
+        self.save_hyperparameters(vars(config))
 
     def forward(self, x):
         x = self.conv(x)
@@ -179,34 +215,116 @@ class ECGLitModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
+        probs = torch.sigmoid(logits)
+
         loss = self.loss_fn(logits, y)
-        preds = torch.sigmoid(logits)
-        acc = self.train_acc(preds, y.int())
+        self.train_acc(probs, y.int())
 
         self.log("train_loss", loss, prog_bar=True)
-        self.log("train_acc", acc, prog_bar=True)
+        self.log("train_acc", self.train_acc, prog_bar=True)
         return loss
         
     def validation_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
+        probs = torch.sigmoid(logits)
+        
         loss = self.loss_fn(logits, y)
-        preds = torch.sigmoid(logits)
-        acc = self.val_acc(preds, y.int())
+        self.val_acc(probs, y.int())
+        self.val_auc(probs, y.int())
+        self.val_auc_macro(probs, y.int())
+        self.val_f1(probs, y.int())
+        self.val_f1_macro(probs, y.int())
+        self.val_precision(probs, y.int())
+        self.val_recall(probs, y.int())
 
         self.log("val_loss", loss, prog_bar=True)
-        self.log("val_acc", acc, prog_bar=True)
+        self.log("val_acc", self.val_acc, prog_bar=True)
 
     def test_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
+        probs = torch.sigmoid(logits)
+
         loss = self.loss_fn(logits, y)
-        preds = torch.sigmoid(logits)
-        acc = self.test_acc(preds, y.int())
+
+        self.test_acc(probs, y.int())
+        self.test_auc(probs, y.int())
+        self.test_auc_macro(probs, y.int())
+        self.test_f1(probs, y.int())
+        self.test_f1_macro(probs, y.int())
+        self.test_precision(probs, y.int())
+        self.test_recall(probs, y.int())
+
+        # confusion matrix can use preds
+        preds = (probs >= self.config.threshold).int()
+        self.test_cm(preds, y.int())
 
         self.log("test_loss", loss, prog_bar=True)
-        self.log("test_acc", acc, prog_bar=True)
+        self.log("test_acc", self.test_acc, prog_bar=True)
+
+    def on_test_epoch_start(self):
+        self.test_acc.reset()
+        self.test_auc.reset()
+        self.test_auc_macro.reset()
+        self.test_f1.reset()
+        self.test_f1_macro.reset()
+        self.test_precision.reset()
+        self.test_recall.reset()
+        self.test_cm.reset()
         
+    def on_validation_epoch_end(self):
+        for i, cls in enumerate(SUPERCLASSES):
+            self.log(f"val_auc_{cls}", self.val_auc.compute()[i])
+            self.log(f"val_f1_{cls}", self.val_f1.compute()[i])
+            self.log(f"val_precision_{cls}", self.val_precision.compute()[i])
+            self.log(f"val_recall_{cls}", self.val_recall.compute()[i])
+
+        self.log("val_auc_macro", self.val_auc_macro.compute(), prog_bar=True)
+        self.log("val_f1_macro", self.val_f1_macro.compute(), prog_bar=True)
+
+        self.val_auc.reset()
+        self.val_auc_macro.reset()
+        self.val_f1.reset()
+        self.val_f1_macro.reset()
+        self.val_precision.reset()
+        self.val_recall.reset()
+
+    def on_test_epoch_end(self):
+        auc = self.test_auc.compute()
+        f1 = self.test_f1.compute()
+        prec = self.test_precision.compute()
+        rec = self.test_recall.compute()
+        
+        cm = self.test_cm.compute()  # shape: [classes, 2, 2]
+        for i, cls in enumerate(SUPERCLASSES):
+            tn = cm[i, 0, 0].item()
+            fp = cm[i, 0, 1].item()
+            fn = cm[i, 1, 0].item()
+            tp = cm[i, 1, 1].item()
+
+            self.log(f"test_TP_{cls}", tp)
+            self.log(f"test_FP_{cls}", fp)
+            self.log(f"test_FN_{cls}", fn)
+            self.log(f"test_TN_{cls}", tn)
+
+        for i, cls in enumerate(SUPERCLASSES):
+            self.log(f"test_auc_{cls}", auc[i])
+            self.log(f"test_f1_{cls}", f1[i])
+            self.log(f"test_precision_{cls}", prec[i])
+            self.log(f"test_recall_{cls}", rec[i])
+
+        self.log("test_auc_macro", self.test_auc_macro.compute(), prog_bar=True)
+        self.log("test_f1_macro", self.test_f1_macro.compute(), prog_bar=True)
+
+        self.test_auc.reset()
+        self.test_auc_macro.reset()
+        self.test_f1.reset()
+        self.test_f1_macro.reset()
+        self.test_precision.reset()
+        self.test_recall.reset()
+        self.test_cm.reset()
+
     def configure_optimizers(self):
         if self.config.optimizer.lower() == "adam":
             return torch.optim.Adam(
@@ -225,14 +343,28 @@ class ECGLitModule(pl.LightningModule):
 
 
 # ---------- LIGHTNING TRAINER ----------
-config = Config(model_name="LeNet")
-model = ECGLitModule(config, LENET_ARCH)
+config = Config(model_name="LeNet-5", max_epochs=1)
+model = ECGLitModule(config)
 data = ECGDataModule(config)
 
-logger = CSVLogger(save_dir=config.save_dir, name=config.model_name)
+version = (
+    f"ch{'-'.join(map(str, config.conv_dims))}"
+    f"_lr{config.learning_rate}"
+    f"_rate{config.sampling_rate}"
+    f"_epochs{config.max_epochs}"
+    f"_{config.optimizer}"
+    f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+)
+
+logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
 checkpoint = ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1, filename="{epoch}-{val_loss:.4f}")
 
 trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint], devices=1)
 trainer.fit(model, datamodule=data)
-trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path)
+trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
+metrics_path = Path(logger.log_dir) / "metrics.csv"
+print(Path(logger.log_dir))
+print(metrics_path)
+plot_all_metrics(metrics_path)
+print_clean_report(metrics_path)
