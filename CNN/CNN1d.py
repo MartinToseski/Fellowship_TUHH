@@ -77,11 +77,14 @@ class ECGDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         X_train, y_train, X_val, y_val, X_test, y_test = split_data(self.config.sampling_rate)
+        print_all_sizes("Initial", X_train, y_train, X_val, y_val, X_test, y_test)
 
         # remove epty labels
         X_train, y_train = remove_empty_diagnosis(X_train, y_train)
         X_val, y_val = remove_empty_diagnosis(X_val, y_val)
         X_test, y_test = remove_empty_diagnosis(X_test, y_test)
+        print_all_sizes("After removing", X_train, y_train, X_val, y_val, X_test, y_test)
+        print_superclass_distribution_statistics(X_train, y_train, X_val, y_val, X_test, y_test)
 
         # label encoding
         mlb = MultiLabelBinarizer(classes=SUPERCLASSES)
