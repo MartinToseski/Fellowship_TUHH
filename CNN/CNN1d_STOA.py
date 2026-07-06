@@ -355,7 +355,7 @@ def run_experiment(config):
     checkpoint = ModelCheckpoint(monitor="val_auc_macro", mode="max", save_top_k=1, filename="{epoch}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=5, min_delta=0.001, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=2)
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=[2])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -365,10 +365,10 @@ def run_experiment(config):
 
 # ---------- GRID SEARCH ----------
 grid = {
-    "learning_rate": [1e-3, 3e-4, 1e-4],
+    "learning_rate": [1e-3, 3e-4],
     "batch_size": [64, 128, 256],
     "optimizer": ["adam", "adamw"],
-    "weight_decay": [0.0, 1e-3, 1e-4]
+    "weight_decay": [0.0, 1e-3]
 }
 
 keys = grid.keys()

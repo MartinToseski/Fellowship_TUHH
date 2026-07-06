@@ -412,41 +412,42 @@ def run_experiment(config):
 
 
 # ---------- GRID SEARCH ----------
-grid = {
-    "learning_rate": [1e-3, 1e-4],
-    "batch_size": [64, 256],
-    "dropout": [0.3, 0.5],
-    "kernel_size": [3, 5, 7],
-    "weight_decay": [0.0, 1e-4]
-}
+if __name__ == "__main__":
+    grid = {
+        "learning_rate": [1e-3, 1e-4],
+        "batch_size": [64, 256],
+        "dropout": [0.3, 0.5],
+        "kernel_size": [3, 5, 7],
+        "weight_decay": [0.0, 1e-4]
+    }
 
-keys = grid.keys()
-values = grid.values()
-combinations = list(product(*values))
+    keys = grid.keys()
+    values = grid.values()
+    combinations = list(product(*values))
 
-results = []
+    results = []
 
-for combo in combinations:
-    params = dict(zip(keys, combo))
+    for combo in combinations:
+        params = dict(zip(keys, combo))
 
-    config = Config(
-        model_name="ModernCNN",
-        learning_rate=params["learning_rate"],
-        batch_size=params["batch_size"],
-        dropout=params["dropout"],
-        kernel_size=params["kernel_size"],
-        weight_decay=params["weight_decay"],
-        max_epochs=50
-    )
+        config = Config(
+            model_name="ModernCNN",
+            learning_rate=params["learning_rate"],
+            batch_size=params["batch_size"],
+            dropout=params["dropout"],
+            kernel_size=params["kernel_size"],
+            weight_decay=params["weight_decay"],
+            max_epochs=50
+        )
 
-    print("=" * 80)
-    print("!!!")
-    print("NEW CONFIG:")
-    print("!!!")
-    print(config)
-    print()
-    print()
+        print("=" * 80)
+        print("!!!")
+        print("NEW CONFIG:")
+        print("!!!")
+        print(config)
+        print()
+        print()
 
-    metrics_path = run_experiment(config)
-    plot_all_metrics(metrics_path)
-    print_clean_report(metrics_path)
+        metrics_path = run_experiment(config)
+        plot_all_metrics(metrics_path)
+        print_clean_report(metrics_path)

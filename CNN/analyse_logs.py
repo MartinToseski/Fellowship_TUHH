@@ -2,7 +2,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-LOG_ROOT = Path("logs/LeNet5")
+LOG_ROOT = Path("logs/ModernCNN")
 
 
 def load_experiment(exp_dir: Path, model_name: str):
@@ -121,6 +121,8 @@ def main():
                 "best_epoch",
                 "learning_rate",
                 "batch_size",
+                "kernel_size",
+                "dropout",
                 "weight_decay",
                 "optimizer",
                 "folder",
@@ -157,6 +159,8 @@ def main():
                 "best_epoch",
                 "learning_rate",
                 "batch_size",
+                "kernel_size",
+                "dropout",
                 "weight_decay",
                 "optimizer",
                 "folder",

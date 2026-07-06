@@ -47,7 +47,7 @@ class Config:
     save_dir = "logs"
     model_name: str = "ModernCNN"
 
-    sampling_rate: int = 100
+    sampling_rate: int = 500
     batch_size: int = 256
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
@@ -378,7 +378,7 @@ def run_experiment(config):
     checkpoint = ModelCheckpoint(monitor="val_auc_macro", mode="max", save_top_k=1, filename="{epoch}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=5, min_delta=0.001, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=1)
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=[1])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -390,8 +390,12 @@ def run_experiment(config):
 grid = {
     "learning_rate": [1e-3, 1e-4],
     "batch_size": [64, 256],
-    "dropout": [0.3, 0.5],
-    "kernel_size": [3, 5, 7],
+    "optimizer": ["adam", "sgd"],
+    "conv_dims": [
+        (32, 64),
+        (32, 64, 128),
+        (64, 128, 256)
+    ],
     "weight_decay": [0.0, 1e-4]
 }
 
@@ -405,7 +409,7 @@ for combo in combinations:
     params = dict(zip(keys, combo))
 
     config = Config(
-        model_name="LeNet5",
+        model_name="LeNet5_sr500",
         learning_rate=params["learning_rate"],
         batch_size=params["batch_size"],
         optimizer=params["optimizer"],
