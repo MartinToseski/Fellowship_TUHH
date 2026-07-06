@@ -51,6 +51,8 @@ class Config:
     batch_size: int = 256
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
+    dropout: float = 0.2
+    kernel_size: int = 3
     
     augmentation: str = "both"
     optimizer: str = "adam"
@@ -58,8 +60,6 @@ class Config:
     num_classes: int = 5
     max_epochs: int = 3
     threshold: float = 0.5
-
-    conv_dims: tuple = (64, 64, 128, 128, 256, 256, 512, 512)
 
 
 # ---------- LIGHTNING DATASET ----------
@@ -161,27 +161,60 @@ class ECGLitModule(pl.LightningModule):
         self.test_probs = []
         self.test_targets = []
         
-        # Build CNN
-        layers = []
-        in_ch = 12
-        for out_ch in config.conv_dims:
-            layers += [
-                nn.Conv1d(in_ch, out_ch, kernel_size=3, padding=1),
-                nn.BatchNorm1d(out_ch),
-                nn.ReLU(),
-                nn.MaxPool1d(kernel_size=2, stride=2)
-            ]
-            in_ch = out_ch
+        # ---------------- Modern CNN ----------------
+        k = config.kernel_size
+        p = k // 2
 
-        self.conv = nn.Sequential(*layers)
+        self.features = nn.Sequential(
+            # Block 1
+            nn.Conv1d(12, 64, kernel_size=7, padding=3),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
 
-        self.dropout = nn.Dropout(0.2)
+            nn.Conv1d(64, 64, kernel_size=k, padding=p),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+
+            nn.MaxPool1d(kernel_size=2),
+
+            # Block 2
+            nn.Conv1d(64, 128, kernel_size=k, padding=p),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+
+            nn.Conv1d(128, 128, kernel_size=k, padding=p),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+
+            nn.MaxPool1d(kernel_size=2),
+
+            # Block 3
+            nn.Conv1d(128, 256, kernel_size=k, padding=p),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+
+            nn.Conv1d(256, 256, kernel_size=k, padding=p),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+
+            nn.MaxPool1d(kernel_size=2),
+
+            # Block 4
+            nn.Conv1d(256, 512, kernel_size=k, padding=p),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+
+            nn.Conv1d(512, 512, kernel_size=k, padding=p),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+        )
+
         self.pool = nn.AdaptiveAvgPool1d(1)
-        self.fc = nn.Linear(in_ch, config.num_classes)
-
-        self.loss_fn = nn.BCEWithLogitsLoss()
+        self.dropout = nn.Dropout(config.dropout)
+        self.fc = nn.Linear(512, config.num_classes)
 
         # Multi-label safe metrics
+        self.loss_fn = nn.BCEWithLogitsLoss()
         self.train_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
 
         self.val_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
@@ -222,7 +255,7 @@ class ECGLitModule(pl.LightningModule):
         self.save_hyperparameters(vars(config))
 
     def forward(self, x):
-        x = self.conv(x)
+        x = self.features(x)
         x = self.pool(x)
         x = x.squeeze(-1)
         x = self.dropout(x)
@@ -349,15 +382,6 @@ class ECGLitModule(pl.LightningModule):
                 lr=self.config.learning_rate,
                 weight_decay=self.config.weight_decay
             )
-        elif self.config.optimizer.lower() == "sgd":
-            return torch.optim.SGD(
-                self.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
-                momentum=0.9
-            )
-        else:
-            raise ValueError(f"Unknown optimizer: {self.config.optimizer}")
 
 
 # ---------- LIGHTNING TRAINER ----------
@@ -366,7 +390,8 @@ def run_experiment(config):
     data = ECGDataModule(config)
 
     version = (
-        f"ch{'-'.join(map(str, config.conv_dims))}"
+        f"ks{config.kernel_size}"
+        f"_dr{config.dropout}"
         f"_lr{config.learning_rate}"
         f"_rate{config.sampling_rate}"
         f"_epochs{config.max_epochs}"
@@ -405,11 +430,11 @@ for combo in combinations:
     params = dict(zip(keys, combo))
 
     config = Config(
-        model_name="LeNet5",
+        model_name="ModernCNN",
         learning_rate=params["learning_rate"],
         batch_size=params["batch_size"],
-        optimizer=params["optimizer"],
-        conv_dims=params["conv_dims"],
+        dropout=params["dropout"],
+        kernel_size=params["kernel_size"],
         weight_decay=params["weight_decay"],
         max_epochs=50
     )
