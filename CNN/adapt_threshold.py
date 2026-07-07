@@ -19,30 +19,94 @@ CLASS_NAMES = [
 ]
 
 
-def find_best_thresholds(probs, labels):
-    thresholds = np.arange(0.05, 0.96, 0.01)
-    best = []
+def find_best_thresholds(probs, labels, coarse_step=0.05, fine_step=0.005, max_iterations=10, tolerance=1e-4):
+    n_classes = labels.shape[1]
+    thresholds = np.full(n_classes, 0.5)
+    previous_macro_f1 = -1.0
 
-    for c in range(labels.shape[1]):
-        best_thr = 0.5
-        best_f1 = -1
+    for iteration in range(max_iterations):
+        print(f"\nCoordinate Descent Iteration {iteration + 1}")
 
-        for thr in thresholds:
-            pred = probs[:, c] >= thr
+        # Optimize every class separately while fixing the others
+        for c in range(n_classes):
+            # Stage 1 : Coarse Search
+            coarse_thresholds = np.arange(0.05, 0.951, coarse_step)
 
-            f1 = f1_score(
-                labels[:, c],
-                pred,
-                zero_division=0
+            best_thr = thresholds[c]
+            best_score = -1
+
+            for thr in coarse_thresholds:
+                candidate = thresholds.copy()
+                candidate[c] = thr
+
+                pred = probs >= candidate
+
+                macro_f1 = f1_score(
+                    labels,
+                    pred,
+                    average="macro",
+                    zero_division=0,
+                )
+
+                if macro_f1 > best_score:
+                    best_score = macro_f1
+                    best_thr = thr
+
+            # Stage 2 : Fine Search
+            low = max(0.05, best_thr - coarse_step)
+            high = min(0.95, best_thr + coarse_step)
+
+            fine_thresholds = np.arange(
+                low,
+                high + fine_step,
+                fine_step,
             )
 
-            if f1 > best_f1:
-                best_f1 = f1
-                best_thr = thr
+            for thr in fine_thresholds:
+                candidate = thresholds.copy()
+                candidate[c] = thr
 
-        best.append(best_thr)
+                pred = probs >= candidate
 
-    return np.array(best)
+                macro_f1 = f1_score(
+                    labels,
+                    pred,
+                    average="macro",
+                    zero_division=0,
+                )
+
+                if macro_f1 > best_score:
+                    best_score = macro_f1
+                    best_thr = thr
+
+            thresholds[c] = round(float(best_thr), 3)
+
+        # Evaluate current solution
+        pred = probs >= thresholds
+
+        macro_f1 = f1_score(
+            labels,
+            pred,
+            average="macro",
+            zero_division=0,
+        )
+
+        print(f"Macro F1 : {macro_f1:.4f}")
+        print(f"Thresholds : {thresholds}")
+
+        # Convergence
+        if abs(macro_f1 - previous_macro_f1) < tolerance:
+            print("\nCoordinate Descent converged.")
+            break
+
+        previous_macro_f1 = macro_f1
+
+    print("\nFinal optimized thresholds:")
+    for cls, thr in zip(CLASS_NAMES, thresholds):
+        print(f"{cls:6s}: {thr:.3f}")
+
+    print(f"\nValidation Macro F1: {previous_macro_f1:.4f}")
+    return thresholds
 
 
 @torch.no_grad()
@@ -130,16 +194,16 @@ def evaluate(probs, labels, thresholds, class_names):
 
     print("\nPer-class metrics")
     print(
-        f"{'Class':<8}"
-        f"{'Precision':>12}"
-        f"{'Recall':>12}"
-        f"{'F1':>12}"
+        f"{'Superclass':<12}"
+        f"{'Precision':>10}"
+        f"{'Recall':>10}"
+        f"{'F1':>10}"
         f"{'AUC':>12}"
     )
 
     for i, name in enumerate(class_names):
         print(
-            f"{name:<8}"
+            f"{name:<6}|"
             f"{precision[i]:>12.3f}"
             f"{recall[i]:>12.3f}"
             f"{f1[i]:>12.3f}"
@@ -188,17 +252,17 @@ def evaluate(probs, labels, thresholds, class_names):
 
 
 device = "cuda"
-checkpoint = Path("logs/ModernCNN/ks3_dr0.5_lr0.001_rate100_epochs50_adam_20260706_100403/checkpoints/epoch=10-val_auc_macro=0.9327.ckpt")
+checkpoint = Path("logs/ModernCNN/ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
 
 config = Config(
     sampling_rate=100,
-    batch_size=64,      # doesn't affect inference much
+    batch_size=256,      # doesn't affect inference much
     learning_rate=1e-3, # not used
-    kernel_size=3,
-    dropout=0.5,
+    kernel_size=7,
+    dropout=0.3,
     weight_decay=0.0,
     optimizer="adam",
-    model_name="ModernCNN_test",
+    model_name="ModernCNN_Threshold",
     max_epochs=50
 )
 model = ECGLitModule.load_from_checkpoint(checkpoint, config=config)
