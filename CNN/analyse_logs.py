@@ -2,7 +2,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-LOG_ROOT = Path("logs/ModernCNN")
+LOG_ROOT = Path("logs/ResNet18")
 
 
 def load_experiment(exp_dir: Path, model_name: str):
