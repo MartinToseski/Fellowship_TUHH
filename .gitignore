@@ -20,3 +20,4 @@ PTB-XL-assessment/vis/
 # Ignore images generated or added to training logs
 FashionMNIST/logs/**/*.png
 */logs/
+*/cache/
