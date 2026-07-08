@@ -98,7 +98,37 @@ def split_data(sampling_rate):
 def per_lead_global_normalization(X_train, X_val, X_test):
     mean = X_train.mean(axis=(0,1), keepdims=True)
     std = X_train.std(axis=(0,1), keepdims=True) + 1e-8
+
     X_train = (X_train - mean) / std
     X_val = (X_val - mean) / std
     X_test = (X_test - mean) / std
+
+    return X_train, X_val, X_test
+
+
+def per_signal_global_normalization(X_train, X_val, X_test):
+    train_mean = X_train.mean(axis=(1, 2), keepdims=True)
+    train_std = X_train.std(axis=(1, 2), keepdims=True) + 1e-8
+
+    val_mean = X_val.mean(axis=(1, 2), keepdims=True)
+    val_std = X_val.std(axis=(1, 2), keepdims=True) + 1e-8
+
+    test_mean = X_test.mean(axis=(1, 2), keepdims=True)
+    test_std = X_test.std(axis=(1, 2), keepdims=True) + 1e-8
+
+    X_train = (X_train - train_mean) / train_std
+    X_val = (X_val - val_mean) / val_std
+    X_test = (X_test - test_mean) / test_std
+
+    return X_train, X_val, X_test
+
+
+def global_normalization(X_train, X_val, X_test):
+    mean = X_train.mean()
+    std = X_train.std() + 1e-8
+
+    X_train = (X_train - mean) / std
+    X_val = (X_val - mean) / std
+    X_test = (X_test - mean) / std
+    
     return X_train, X_val, X_test

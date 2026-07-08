@@ -2,7 +2,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-LOG_ROOT = Path("logs/ResNet18")
+LOG_ROOT = Path("logs/LeNet5")
 
 
 def load_experiment(exp_dir: Path, model_name: str):
@@ -52,6 +52,7 @@ def load_experiment(exp_dir: Path, model_name: str):
         "weight_decay": hp.get("weight_decay"),
         "optimizer": hp.get("optimizer"),
         "sampling_rate": hp.get("sampling_rate"),
+        "conv_dims": hp.get("conv_dims"),
 
         # Validation
         "best_epoch": int(best["epoch"]),
@@ -120,6 +121,7 @@ def main():
                 "best_val_auc",
                 "best_epoch",
                 "learning_rate",
+                "conv_dims",
                 "batch_size",
                 "kernel_size",
                 "dropout",
@@ -158,6 +160,7 @@ def main():
                 "best_val_f1",
                 "best_epoch",
                 "learning_rate",
+                "conv_dims",
                 "batch_size",
                 "kernel_size",
                 "dropout",
