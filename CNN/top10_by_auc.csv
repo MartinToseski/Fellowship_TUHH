@@ -1,2 +1,0 @@
-model,experiment,folder,learning_rate,batch_size,kernel_size,dropout,weight_decay,optimizer,sampling_rate,conv_dims,best_epoch,best_val_auc,best_val_f1,best_val_loss,test_auc,test_f1,test_acc,test_loss
-1dCNN_NoEarlyStop_F1_SquaredLoss,ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260709_131805,logs/1dCNN_NoEarlyStop_F1_SquaredLoss/ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260709_131805,0.001,256,7,0.3,0.0,adam,100,,10,0.9313217997550964,0.730064868927002,0.402432769536972,0.9268585443496704,0.7274188995361328,0.865094780921936,0.4096382856369018
