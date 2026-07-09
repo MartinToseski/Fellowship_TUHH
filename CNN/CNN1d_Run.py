@@ -1,3 +1,18 @@
+'''
+PREPROCESSING STEPS:
+1. WFDB Format Handling                                                     ✓
+2. Sampling Rate Handling (100 or 500 Hz)                                   ✓
+    + Optional Bandpass Filter                                              -
+3. Convert SCP Codes into Binary Vector                                     ✓
+4. Signal Per-Record or Per-Lead Normalization                              ✓
+5. Class Imbalance Handling - Weighted Loss Function Tested in Grid         -                                                                                      
+6. Training/Validation/Split According to Folds                             ✓
+    (1-8 training, 9 for validation, and 10 for testing)                    -
+7. Reformat signal dimensions depending on model input requirements         ✓
+8. Data Augmentation                                                        
+'''
+
+
 import torch
 import numpy as np
 import pandas as pd
@@ -18,7 +33,7 @@ from itertools import product
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-from preprocessing import split_data, per_lead_global_normalization
+from preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
 from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
 
 
@@ -99,16 +114,6 @@ class ECGDataModule(pl.LightningDataModule):
         y_val = mlb.transform(y_val)
         y_test = mlb.transform(y_test)
 
-        positive = y_train.sum(axis=0)
-        negative = len(y_train) - positive
-        pos_weight = np.sqrt(negative / positive)
-
-        self.pos_weight = torch.tensor(pos_weight, dtype=torch.float32)
-
-        print("\nPositive class weights")
-        for cls, w in zip(SUPERCLASSES, self.pos_weight):
-            print(f"{cls:5s}: {w:.3f}")
-
         # normalization
         X_train, X_val, X_test = per_lead_global_normalization(X_train, X_val, X_test)
 
@@ -145,7 +150,7 @@ class ECGDataModule(pl.LightningDataModule):
 
 # ---------- LIGHTNING MODULE ----------
 class ECGLitModule(pl.LightningModule):
-    def __init__(self, config: Config, pos_weight=None):
+    def __init__(self, config: Config):
         super().__init__()
         self.config = config
         self.model_name = config.model_name
@@ -209,11 +214,7 @@ class ECGLitModule(pl.LightningModule):
         self.fc = nn.Linear(512, config.num_classes)
 
         # Multi-label safe metrics
-        if pos_weight is not None:
-            self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        else:
-            self.loss_fn = nn.BCEWithLogitsLoss()
-
+        self.loss_fn = nn.BCEWithLogitsLoss()
         self.train_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
 
         self.val_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
@@ -309,8 +310,8 @@ class ECGLitModule(pl.LightningModule):
         preds = (probs >= self.config.threshold).int()
         self.test_cm(preds, y.int())
 
-        self.log("test_loss", loss, prog_bar=True)
-        self.log("test_acc", self.test_acc, prog_bar=True)
+        self.log("test_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test_acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True)
 
     def on_test_epoch_start(self):
         self.test_acc.reset()
@@ -385,10 +386,8 @@ class ECGLitModule(pl.LightningModule):
 
 # ---------- LIGHTNING TRAINER ----------
 def run_experiment(config):
+    model = ECGLitModule(config)
     data = ECGDataModule(config)
-    data.setup()
-
-    model = ECGLitModule(config, pos_weight=data.pos_weight)
 
     version = (
         f"ks{config.kernel_size}"
@@ -404,7 +403,7 @@ def run_experiment(config):
     checkpoint = ModelCheckpoint(monitor="val_auc_macro", mode="max", save_top_k=1, filename="{epoch}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=5, min_delta=0.001, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=1)
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=[1])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -414,26 +413,44 @@ def run_experiment(config):
 
 # ---------- GRID SEARCH ----------
 if __name__ == "__main__":
-    config = Config(
-        model_name="ModernCNN_Test",
+    macro_F1 = []
+    macro_AUC = []
+    
+    for i in range(5):
+        config = Config(
+            model_name="1dCNN_Run5",
 
-        sampling_rate=100,
-        augmentation="both",
+            sampling_rate=100,
+            augmentation="both",
 
-        batch_size=256,
-        learning_rate=1e-3,
-        weight_decay=0.0,
+            batch_size=256,
+            learning_rate=1e-3,
+            weight_decay=0.0,
 
-        kernel_size=7,
-        dropout=0.3,
+            kernel_size=7,
+            dropout=0.3,
 
-        optimizer="adam",
+            optimizer="adam",
 
-        num_classes=5,
-        max_epochs=50,
-        threshold=0.5,
-    )
+            num_classes=5,
+            max_epochs=50,
+            threshold=0.5,
+        )
 
-    metrics_path = run_experiment(config)
-    plot_all_metrics(metrics_path)
-    print_clean_report(metrics_path)
+        metrics_path = run_experiment(config)
+
+        plot_all_metrics(metrics_path)
+        print_clean_report(metrics_path)
+        
+        df = pd.read_csv(metrics_path)
+        latest = df.dropna(subset=["test_acc"]).iloc[-1]
+
+        macro_F1.append(latest["test_f1_macro"])
+        macro_AUC.append(latest["test_auc_macro"])
+
+
+print(f"Macro F1 scores : {macro_F1}")
+print(f"Macro AUC scores: {macro_AUC}")
+print()
+print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
+print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")

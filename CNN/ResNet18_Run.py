@@ -93,17 +93,6 @@ class ECGDataModule(pl.LightningDataModule):
         #print_all_sizes("After removing", X_train, y_train, X_val, y_val, X_test, y_test)
         #print_superclass_distribution_statistics(X_train, y_train, X_val, y_val, X_test, y_test)
 
-        def convert_to_cabrera(X):
-            X = X[:, :, CABRERA_ORDER].copy()
-            X[:, :, 2] *= -1      # -aVR
-            return X
-        
-        print(X_train.shape)
-        
-        X_train = convert_to_cabrera(X_train)
-        X_val = convert_to_cabrera(X_val)
-        X_test = convert_to_cabrera(X_test)
-
         # label encoding
         mlb = MultiLabelBinarizer(classes=SUPERCLASSES)
         y_train = mlb.fit_transform(y_train)
@@ -367,7 +356,7 @@ def run_experiment(config):
     checkpoint = ModelCheckpoint(monitor="val_auc_macro", mode="max", save_top_k=1, filename="{epoch}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=5, min_delta=0.001, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=1)
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=[0])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -376,15 +365,34 @@ def run_experiment(config):
 
 
 # ---------- GRID SEARCH ----------
-config = Config(
-    model_name="ResNet18_Reorder",
-    optimizer="adam",
-    learning_rate=1e-3,
-    batch_size=128,
-    weight_decay=0.0,
-    max_epochs=50
-)
+if __name__ == "__main__":
+    macro_F1 = []
+    macro_AUC = []
+    
+    for i in range(5):
+        config = Config(
+            model_name="ResNet18_Run5",
+            optimizer="adam",
+            learning_rate=1e-3,
+            batch_size=128,
+            weight_decay=0.0,
+            max_epochs=50
+        )
 
-metrics_path = run_experiment(config)
-plot_all_metrics(metrics_path)
-print_clean_report(metrics_path)
+        metrics_path = run_experiment(config)
+
+        plot_all_metrics(metrics_path)
+        print_clean_report(metrics_path)
+        
+        df = pd.read_csv(metrics_path)
+        latest = df.dropna(subset=["test_acc"]).iloc[-1]
+
+        macro_F1.append(latest["test_f1_macro"])
+        macro_AUC.append(latest["test_auc_macro"])
+
+
+print(f"Macro F1 scores : {macro_F1}")
+print(f"Macro AUC scores: {macro_AUC}")
+print()
+print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
+print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")
