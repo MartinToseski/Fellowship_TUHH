@@ -2,7 +2,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-LOG_ROOT = Path("logs/LeNet5")
+LOG_ROOT = Path("../logs/1dCNN_NoEarlyStop_F1_SquaredLoss")
 
 
 def load_experiment(exp_dir: Path, model_name: str):
@@ -95,24 +95,6 @@ def main():
 
     results.to_csv("all_experiments.csv", index=False)
 
-    # Common columns used for both tables
-    columns = [
-        "model",
-        "test_auc",
-        "test_f1",
-        "best_val_auc",
-        "best_val_f1",      
-        "best_epoch",
-        "learning_rate",
-        "conv_dims",
-        "batch_size",
-        "kernel_size",
-        "dropout",
-        "weight_decay",
-        "optimizer",
-        "folder",
-    ]
-
     # ==========================================================
     # Top 10 by TEST AUC
     # ==========================================================
@@ -132,7 +114,21 @@ def main():
 
     print(
         top_auc[
-            columns              
+            [
+                "model",
+                "test_auc",
+                "test_f1",
+                "best_val_auc",
+                "best_epoch",
+                "learning_rate",
+                "conv_dims",
+                "batch_size",
+                "kernel_size",
+                "dropout",
+                "weight_decay",
+                "optimizer",
+                "folder",
+            ]
         ].to_string()
     )
 
@@ -157,7 +153,21 @@ def main():
 
     print(
         top_f1[
-            columns              
+            [
+                "model",
+                "test_f1",
+                "test_auc",
+                "best_val_f1",
+                "best_epoch",
+                "learning_rate",
+                "conv_dims",
+                "batch_size",
+                "kernel_size",
+                "dropout",
+                "weight_decay",
+                "optimizer",
+                "folder",
+            ]
         ].to_string()
     )
 
