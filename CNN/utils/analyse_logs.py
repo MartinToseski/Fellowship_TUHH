@@ -2,7 +2,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-LOG_ROOT = Path("logs/1dCNN_NoEarlyStop_F1_SquaredLoss")
+LOG_ROOT = Path("../logs/1dCNN_NoEarlyStop_F1_SquaredLoss")
 
 
 def load_experiment(exp_dir: Path, model_name: str):

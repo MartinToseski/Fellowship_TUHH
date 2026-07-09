@@ -6,7 +6,7 @@ import os
 import pickle
 
 
-DATA_PATH = "../../data/ptb-xl/"
+DATA_PATH = "../../../data/ptb-xl/"
 
 
 def load_raw_data(df, sampling_rate, path):
@@ -19,8 +19,8 @@ def load_raw_data(df, sampling_rate, path):
 
 
 def load_dataset(sampling_rate):
-    CACHE_X_PATH = f"./cache/X_{sampling_rate}.npy"
-    CACHE_Y_PATH = f"./cache/Y_{sampling_rate}.pkl"
+    CACHE_X_PATH = f"../cache/X_{sampling_rate}.npy"
+    CACHE_Y_PATH = f"../cache/Y_{sampling_rate}.pkl"
 
     # ---------- LOAD CACHE IF IT EXISTS ----------
     if os.path.exists(CACHE_X_PATH) and os.path.exists(CACHE_Y_PATH):
@@ -60,7 +60,7 @@ def load_dataset(sampling_rate):
     Y['diagnostic_superclass'] = Y['scp_codes'].apply(aggregate_diagnostic)
 
     # ---------- SAVE CACHE ----------
-    os.makedirs("./cache", exist_ok=True)
+    os.makedirs("../cache", exist_ok=True)
     np.save(CACHE_X_PATH, X)
 
     with open(CACHE_Y_PATH, "wb") as f:

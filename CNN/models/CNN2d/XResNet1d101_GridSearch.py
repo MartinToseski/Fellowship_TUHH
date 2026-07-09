@@ -34,8 +34,8 @@ from tsai.models.XResNet1d import xresnet1d101
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-from preprocessing import split_data, per_lead_global_normalization
-from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+from utils.preprocessing import split_data, per_lead_global_normalization
+from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
@@ -45,7 +45,7 @@ pl.seed_everything(22, workers=True)
 # ---------- CONFIG DATACLASS ----------
 @dataclass
 class Config:
-    save_dir = "logs"
+    save_dir = "../logs"
     model_name: str = "ModernCNN"
 
     sampling_rate: int = 100

@@ -5,7 +5,7 @@ import torch
 
 from sklearn.metrics import f1_score
 
-from CNN1d_GridSearch import ECGLitModule, ECGDataModule, Config
+from models.CNN1d.CNN1d_GridSearch import ECGLitModule, ECGDataModule, Config
 
 from sklearn.metrics import accuracy_score, precision_score, f1_score, roc_auc_score, multilabel_confusion_matrix, recall_score
 
@@ -252,7 +252,7 @@ def evaluate(probs, labels, thresholds, class_names):
 
 
 device = "cuda"
-checkpoint = Path("logs/ModernCNN/ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
+checkpoint = Path("../logs/ModernCNN/ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
 
 config = Config(
     sampling_rate=100,
