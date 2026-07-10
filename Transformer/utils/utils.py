@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
-METRICS = ["train_loss", "train_acc", "val_loss", "val_acc", "val_auc_macro", "val_f1_macro"]
+METRICS = ["train_loss", "train_acc", "val_loss", "val_acc", "val_auc_macro", "val_f1_macro", "learning_rate"]
 
 
 def print_all_sizes(comment, X_train, y_train, X_val, y_val, X_test, y_test):
@@ -77,6 +77,8 @@ def plot_metric(df, metric, output_dir):
         plt.ylabel("Precision")
     elif "recall" in metric:
         plt.ylabel("Recall")
+    elif "learning_rate" in metric:
+        plt.ylabel("Learning Rate")
     else:
         plt.ylabel("Accuracy")
 

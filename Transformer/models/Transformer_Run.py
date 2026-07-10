@@ -2,21 +2,27 @@ import torch
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
+import math
+import sys
+import wandb
 
 from torch import nn
-from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 from torchmetrics.classification import MultilabelAccuracy, MultilabelAUROC, MultilabelF1Score, MultilabelPrecision, MultilabelRecall, MultilabelConfusionMatrix
-from torchvision import transforms
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
 from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, confusion_matrix
-from itertools import product
+from pathlib import Path
 
-from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
 
 from utils.preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
 from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
@@ -30,21 +36,36 @@ pl.seed_everything(22, workers=True)
 @dataclass
 class Config:
     save_dir = "../logs"
-    model_name: str = "ModernCNN"
+    model_name: str = "Transformer"
 
     sampling_rate: int = 100
     batch_size: int = 256
     learning_rate: float = 1e-3
-    weight_decay: float = 0.0
+    weight_decay: float = 0.01
+    
     dropout: float = 0.2
-    kernel_size: int = 3
+    d_model: int = 128
+    n_heads: int = 4
+    n_layers: int = 4
+    ff_dim: int = 512
+
+    patch_size: int = 5
+    pooling: str = "cls"
+
+    positional_encoding: str = "sinusoidal"
+    warmup_epochs = 10
+    min_lr = 1e-6
     
     augmentation: str = "both"
-    optimizer: str = "adam"
+    optimizer: str = "adamw"
 
     num_classes: int = 5
-    max_epochs: int = 3
+    max_epochs: int = 50
     threshold: float = 0.5
+
+    patience: int = 10
+    early_stop_threshold: float = 1e-4
+    gradient_clip_val: float = 1.0
 
 
 # ---------- LIGHTNING DATASET ----------
@@ -99,13 +120,14 @@ class ECGDataModule(pl.LightningDataModule):
         y_val = mlb.transform(y_val)
         y_test = mlb.transform(y_test)
 
+        # weights for loss function
+        positive = y_train.sum(axis=0)
+        negative = len(y_train) - positive
+        pos_weight = np.sqrt(negative / positive)
+        self.pos_weight = torch.tensor(pos_weight, dtype=torch.float32)
+
         # normalization
         X_train, X_val, X_test = per_lead_global_normalization(X_train, X_val, X_test)
-
-        # format for Conv1D (batch, channels, time)
-        X_train = np.transpose(X_train, (0, 2, 1))
-        X_val = np.transpose(X_val, (0, 2, 1))
-        X_test = np.transpose(X_test, (0, 2, 1))
 
         self.train_dataset = ECGDataset(X_train, y_train, augmentation=self.config.augmentation)
         self.val_dataset = ECGDataset(X_val, y_val)
@@ -133,9 +155,62 @@ class ECGDataModule(pl.LightningDataModule):
         )
 
 
+# ---------- TRANSFORMER MODULES ----------
+class PatchEmbedding(nn.Module):
+    '''
+        Input:
+            (batch, sequence_length, num_leads) / 
+            (batch, 1000, 12)
+        Output:
+            (batch, num_patches, d_model)
+            (batch, 200, d_model)
+    '''
+    def __init__(self, patch_size, num_leads, d_model):
+        super().__init__()
+        self.patch_size = patch_size
+        self.num_leads = num_leads   
+        self.projection = nn.Linear(patch_size*num_leads, d_model)
+
+    def forward(self, x):
+        B, T, C = x.shape
+
+        if T % self.patch_size != 0:
+            raise ValueError(
+                f"Sequence length ({T}) must be divisible "
+                f"by patch_size ({self.patch_size})."
+            )
+
+        num_patches = T // self.patch_size
+
+        x = x.reshape(B, num_patches, self.patch_size*C)
+        x = self.projection(x)
+        return x
+
+
+class PositionalEncoding(nn.Module):
+    '''
+        PE(pos,2i) = sin(pos/10000^(2i/d_model))
+        PE(pos,2i+1) = cos(pos/10000^(2i/d_model))
+    '''
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) * (-math.log(10000.0)/d_model))
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        return x + self.pe[:, : x.size(1)]
+
+
 # ---------- LIGHTNING MODULE ----------
 class ECGLitModule(pl.LightningModule):
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, pos_weight=None):
         super().__init__()
         self.config = config
         self.model_name = config.model_name
@@ -145,61 +220,69 @@ class ECGLitModule(pl.LightningModule):
 
         self.test_probs = []
         self.test_targets = []
+
+        assert config.d_model % config.n_heads == 0
         
-        # ---------------- Modern CNN ----------------
-        k = config.kernel_size
-        p = k // 2
-
-        self.features = nn.Sequential(
-            # Block 1
-            nn.Conv1d(12, 64, kernel_size=7, padding=3),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(64, 64, kernel_size=k, padding=p),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-
-            nn.MaxPool1d(kernel_size=2),
-
-            # Block 2
-            nn.Conv1d(64, 128, kernel_size=k, padding=p),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(128, 128, kernel_size=k, padding=p),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-
-            nn.MaxPool1d(kernel_size=2),
-
-            # Block 3
-            nn.Conv1d(128, 256, kernel_size=k, padding=p),
-            nn.BatchNorm1d(256),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(256, 256, kernel_size=k, padding=p),
-            nn.BatchNorm1d(256),
-            nn.ReLU(inplace=True),
-
-            nn.MaxPool1d(kernel_size=2),
-
-            # Block 4
-            nn.Conv1d(256, 512, kernel_size=k, padding=p),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(512, 512, kernel_size=k, padding=p),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
+        # ---------------- Transformer Architecture ----------------
+        self.patch_embedding = PatchEmbedding(
+            patch_size=config.patch_size,
+            num_leads=12,
+            d_model=config.d_model,
         )
 
-        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.embedding_dropout = nn.Dropout(config.dropout)
+
+        num_patches = config.sampling_rate*10 // config.patch_size
+
+        if config.positional_encoding == "sinusoidal":
+            self.positional_encoding = PositionalEncoding(
+                d_model=config.d_model,
+                max_len=num_patches + 1,
+            )
+        elif config.positional_encoding == "learnable":
+            self.positional_embedding = nn.Parameter(
+                torch.randn(1, num_patches + 1, config.d_model)
+            )
+
+            nn.init.trunc_normal_(
+                self.positional_embedding,
+                std=0.02
+            )    
+
+        self.cls_token = nn.Parameter(
+            torch.empty(1,1,config.d_model)
+        )
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_heads,
+            dim_feedforward=config.ff_dim,
+            dropout=config.dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True
+        )
+
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=config.n_layers
+        )
+
         self.dropout = nn.Dropout(config.dropout)
-        self.fc = nn.Linear(512, config.num_classes)
+
+        self.norm = nn.LayerNorm(config.d_model)
+
+        self.fc = nn.Linear(
+            config.d_model,
+            config.num_classes
+        )
 
         # Multi-label safe metrics
-        self.loss_fn = nn.BCEWithLogitsLoss()
+        if pos_weight is not None:
+            self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        else:
+            self.loss_fn = nn.BCEWithLogitsLoss()
         self.train_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
 
         self.val_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
@@ -240,12 +323,30 @@ class ECGLitModule(pl.LightningModule):
         self.save_hyperparameters(vars(config))
 
     def forward(self, x):
-        x = self.features(x)
-        x = self.pool(x)
-        x = x.squeeze(-1)
+        x = self.patch_embedding(x)
+
+        cls = self.cls_token.expand(x.size(0), -1, -1)
+        x = torch.cat([cls, x], dim=1)
+        
+        if self.config.positional_encoding == "sinusoidal":
+            x = self.positional_encoding(x)
+        else:
+            x = x + self.positional_embedding
+
+        x = self.embedding_dropout(x)
+        x = self.encoder(x)
+
+        if self.config.pooling == "cls":
+            x = x[:,0]
+        elif self.config.pooling == "mean":
+            x = x.mean(dim=1)
+
+        x = self.norm(x)
         x = self.dropout(x)
-        x = self.fc(x)
-        return x
+
+        logits = self.fc(x)
+
+        return logits
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -307,6 +408,16 @@ class ECGLitModule(pl.LightningModule):
         self.test_precision.reset()
         self.test_recall.reset()
         self.test_cm.reset()
+
+    def on_train_epoch_end(self):
+        lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+        self.log(
+            "learning_rate",
+            lr,
+            prog_bar=False,
+            logger=True,
+            on_epoch=True,
+        )
         
     def on_validation_epoch_end(self):
         for i, cls in enumerate(SUPERCLASSES):
@@ -331,7 +442,7 @@ class ECGLitModule(pl.LightningModule):
         prec = self.test_precision.compute()
         rec = self.test_recall.compute()
         
-        cm = self.test_cm.compute()  # shape: [classes, 2, 2]
+        cm = self.test_cm.compute()  
         for i, cls in enumerate(SUPERCLASSES):
             tn = cm[i, 0, 0].item()
             fp = cm[i, 0, 1].item()
@@ -361,36 +472,97 @@ class ECGLitModule(pl.LightningModule):
         self.test_cm.reset()
 
     def configure_optimizers(self):
-        if self.config.optimizer.lower() == "adam":
-            return torch.optim.Adam(
-                self.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay
-            )
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay
+        )
+
+        warmup_scheduler = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=self.config.warmup_epochs,
+        )   
+
+        cosine_scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=self.config.max_epochs - self.config.warmup_epochs,
+            eta_min=self.config.min_lr,
+        )
+
+        scheduler = SequentialLR(
+            optimizer,
+            schedulers=[
+                warmup_scheduler,
+                cosine_scheduler,
+            ],
+            milestones=[
+                self.config.warmup_epochs
+            ],
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+            },
+        }
 
 
 # ---------- LIGHTNING TRAINER ----------
 def run_experiment(config):
-    model = ECGLitModule(config)
     data = ECGDataModule(config)
+    data.setup()
+
+    model = ECGLitModule(config, pos_weight=data.pos_weight)
 
     version = (
-        f"ks{config.kernel_size}"
+        f"d{config.d_model}"
+        f"_head{config.n_heads}"
+        f"_lay{config.n_layers}"
+        f"_ff{config.ff_dim}"
+        f"_ptch{config.patch_size}"
+        f"_pl{config.pooling}"
+        f"_pos{config.positional_encoding}"
         f"_dr{config.dropout}"
         f"_lr{config.learning_rate}"
-        f"_rate{config.sampling_rate}"
-        f"_epochs{config.max_epochs}"
-        f"_{config.optimizer}"
+        f"_ep{config.max_epochs}"
+        f"_opt{config.optimizer}"
+        f"_pat{config.patience}"
+        f"_patt{config.early_stop_threshold}"
         f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
 
     logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
-    checkpoint = ModelCheckpoint(monitor="val_auc_macro", mode="max", save_top_k=1, filename="{epoch}-{val_auc_macro:.4f}")
-    early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=5, min_delta=0.001, verbose=True)
+    wandb_logger = WandbLogger(project="Transformer_Base_100epochs", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=[1])
+    wandb_logger.log_hyperparams(vars(config))
+    num_params = sum(p.numel() for p in model.parameters())
+    wandb_logger.experiment.config.update({"parameters": num_params})
+
+    wandb_logger.watch(model, log="gradients", log_freq=100)
+
+    checkpoint = ModelCheckpoint(monitor="val_f1_macro", mode="max", save_top_k=1, filename="{epoch:02d}-{val_f1_macro:.4f}-{val_auc_macro:.4f}")
+    early_stop = EarlyStopping(monitor="val_f1_macro", mode="max", patience=config.patience, min_delta=config.early_stop_threshold, verbose=True)
+
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], gradient_clip_val=config.gradient_clip_val, devices=[0])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
+
+    wandb_logger.experiment.summary["best_checkpoint"] = checkpoint.best_model_path
+    wandb_logger.experiment.summary["best_val_f1"] = checkpoint.best_model_score.item()
+
+    # Validation AUC stored inside checkpoint callback filename/metrics
+    if "val_auc_macro" in trainer.callback_metrics:
+        wandb_logger.experiment.summary["best_val_auc"] = (
+            trainer.callback_metrics["val_auc_macro"].item()
+        )
+
+    wandb_logger.experiment.summary["parameters"] = num_params
+    wandb.finish()
 
     metrics_path = Path(logger.log_dir) / "metrics.csv"
     return metrics_path
@@ -401,25 +573,34 @@ if __name__ == "__main__":
     macro_F1 = []
     macro_AUC = []
     
-    for i in range(5):
+    for i in range(1):
         config = Config(
-            model_name="1dCNN_Run5",
+            model_name="Transformer_Base",
 
             sampling_rate=100,
             augmentation="both",
 
-            batch_size=256,
-            learning_rate=1e-3,
-            weight_decay=0.0,
+            batch_size=64,
+            learning_rate=3e-4,
+            weight_decay=0.01,
 
-            kernel_size=7,
-            dropout=0.3,
+            d_model = 128,
+            n_heads = 4,
+            n_layers = 4,
+            ff_dim = 512,
 
-            optimizer="adam",
+            patch_size = 5,
+            pooling = "cls",
+
+            positional_encoding = "sinusoidal",
 
             num_classes=5,
-            max_epochs=50,
+            max_epochs=100,
             threshold=0.5,
+
+            patience=10,
+            early_stop_threshold=1e-4,
+            gradient_clip_val=1.0
         )
 
         metrics_path = run_experiment(config)

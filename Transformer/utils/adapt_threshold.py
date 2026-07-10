@@ -5,7 +5,7 @@ import torch
 
 from sklearn.metrics import f1_score
 
-from models.CNN1d.CNN1d_GridSearch import ECGLitModule, ECGDataModule, Config
+from models.Transformer_Run import ECGLitModule, ECGDataModule, Config
 
 from sklearn.metrics import accuracy_score, precision_score, f1_score, roc_auc_score, multilabel_confusion_matrix, recall_score
 
