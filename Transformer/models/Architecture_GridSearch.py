@@ -54,8 +54,8 @@ class Config:
     pooling: str = "cls"
 
     positional_encoding: str = "sinusoidal"
-    warmup_epochs = 10
-    min_lr = 1e-6
+    warmup_epochs: int = 10
+    min_lr: float = 1e-6
     
     augmentation: str = "both"
     optimizer: str = "adamw"
@@ -606,15 +606,8 @@ if __name__ == "__main__":
         {"d_model": 512, "n_layers": 2, "n_heads": 8, "ff_dim": 2048},
     ]
 
-    keys = grid.keys()
-    values = grid.values()
-    combinations = list(product(*values))
-
     results = []
-
-    for combo in combinations:
-        params = dict(zip(keys, combo))
-
+    for params in grid:
         config = Config(
             model_name="Transformer_Base",
 
@@ -636,7 +629,8 @@ if __name__ == "__main__":
             positional_encoding = "sinusoidal",
 
             num_classes=5,
-            max_epochs=100,
+            max_epochs=3,
+            warmup_epochs=1,
             threshold=0.5,
 
             patience=10,

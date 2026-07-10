@@ -54,8 +54,8 @@ class Config:
     pooling: str = "cls"
 
     positional_encoding: str = "sinusoidal"
-    warmup_epochs = 10
-    min_lr = 1e-6
+    warmup_epochs: int = 10
+    min_lr: float = 1e-6
     
     augmentation: str = "both"
     optimizer: str = "adamw"
@@ -541,7 +541,7 @@ def run_experiment(config):
     )
 
     logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
-    wandb_logger = WandbLogger(project="Transformer_Base_100epochs", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
+    wandb_logger = WandbLogger(project="Arch_Ablation_GridSearch_Test", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
 
     wandb_logger.log_hyperparams(vars(config))
     num_params = sum(p.numel() for p in model.parameters())
@@ -552,7 +552,7 @@ def run_experiment(config):
     checkpoint = ModelCheckpoint(monitor="val_f1_macro", mode="max", save_top_k=1, filename="{epoch:02d}-{val_f1_macro:.4f}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_f1_macro", mode="max", patience=config.patience, min_delta=config.early_stop_threshold, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], gradient_clip_val=config.gradient_clip_val, devices=[0])
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], gradient_clip_val=config.gradient_clip_val, devices=[1])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -663,15 +663,8 @@ if __name__ == "__main__":
         },
     ]
 
-    keys = grid.keys()
-    values = grid.values()
-    combinations = list(product(*values))
-
     results = []
-
-    for combo in combinations:
-        params = dict(zip(keys, combo))
-
+    for params in grid:
         config = Config(
             model_name="Transformer_Base",
 
@@ -696,7 +689,8 @@ if __name__ == "__main__":
             norm_first=params["norm_first"],
 
             num_classes=5,
-            max_epochs=100,
+            max_epochs=3,
+            warmup_epochs=1,
             threshold=0.5,
 
             patience=10,
