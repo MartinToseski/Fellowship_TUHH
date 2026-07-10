@@ -546,7 +546,7 @@ def run_experiment(config):
 
     wandb_logger.watch(model, log="gradients", log_freq=100)
 
-    checkpoint = ModelCheckpoint(monitor="val_f1_macro", mode="max", save_top_k=1, filename="{epoch:02d}-{val_f1_macro:.4f}-{val_auc_macro:.4f}")
+    checkpoint = ModelCheckpoint(monitor="val_f1_macro", mode="max", save_top_k=3, filename="{epoch:02d}-{val_f1_macro:.4f}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_f1_macro", mode="max", patience=config.patience, min_delta=config.early_stop_threshold, verbose=True)
 
     trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], gradient_clip_val=config.gradient_clip_val, devices=[2])
@@ -607,7 +607,7 @@ if __name__ == "__main__":
             "learning_rate": 3e-4,
             "dropout": 0.2,
             "weight_decay": 1e-2,
-            "patch_size": 2,
+            "patch_size": 4,
         },
 
         {
@@ -693,11 +693,11 @@ if __name__ == "__main__":
             positional_encoding = "sinusoidal",
 
             num_classes=5,
-            max_epochs=3,
-            warmup_epochs=1,
+            max_epochs=100,
+            warmup_epochs=10,
             threshold=0.5,
 
-            patience=10,
+            patience=15,
             early_stop_threshold=1e-4,
             gradient_clip_val=1.0
         )
