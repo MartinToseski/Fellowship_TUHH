@@ -2,8 +2,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import sys
 
 from sklearn.metrics import f1_score
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from models.Transformer_Run import ECGLitModule, ECGDataModule, Config
 
@@ -20,6 +24,16 @@ CLASS_NAMES = [
 
 
 def find_best_thresholds(probs, labels, coarse_step=0.05, fine_step=0.005, max_iterations=10, tolerance=1e-4):
+    baseline_pred = probs >= 0.5
+    print(
+        f1_score(
+            labels,
+            baseline_pred,
+            average="macro",
+            zero_division=0,
+        )
+    )
+
     n_classes = labels.shape[1]
     thresholds = np.full(n_classes, 0.5)
     previous_macro_f1 = -1.0
@@ -252,26 +266,50 @@ def evaluate(probs, labels, thresholds, class_names):
 
 
 device = "cuda"
-checkpoint = Path("../logs/ModernCNN/ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
+checkpoint = Path("./logs/ArchAblation_GridSearch/d384_head8_lay6_ff2304_ptch4_plmean_poslearnable_dr0.1_lr0.0005_ep100_optadamw_pat15_patt0.0001_wd0.01_lossweighted_bce_actgelu_normpre_20260713_052757/checkpoints/epoch=57-val_f1_macro=0.7221-val_auc_macro=0.9125.ckpt")
 
 config = Config(
+    model_name="Transformer",
+
     sampling_rate=100,
-    batch_size=256,      # doesn't affect inference much
-    learning_rate=1e-3, # not used
-    kernel_size=7,
-    dropout=0.3,
-    weight_decay=0.0,
-    optimizer="adam",
-    model_name="ModernCNN_Threshold",
-    max_epochs=50
+    augmentation="both",
+
+    batch_size=64,
+    learning_rate=5e-4,
+    weight_decay=0.01,
+    dropout=0.1,
+
+    d_model = 384,
+    n_heads = 8,
+    n_layers = 6,
+    ff_dim = 2304,
+
+    patch_size = 4,
+    pooling = "mean",
+
+    positional_encoding = "learnable",
+    activation="gelu",
+    loss="weighted_bce",
+    norm_first=True,
+
+    num_classes=5,
+    max_epochs=100,
+    threshold=0.5,
+    warmup_epochs=10,
+
+    patience=15,
+    early_stop_threshold=1e-4,
+    gradient_clip_val=1.0
 )
-model = ECGLitModule.load_from_checkpoint(checkpoint, config=config)
-model.to(device)
 
 data = ECGDataModule(config)
 data.setup()
 
+model = ECGLitModule.load_from_checkpoint(checkpoint, config=config, pos_weight=data.pos_weight)
+model.to(device)
+
 val_probs, val_labels = predict(model, data.val_dataloader(), device)
+
 best_thresholds = find_best_thresholds(val_probs, val_labels)
 print(best_thresholds)
 

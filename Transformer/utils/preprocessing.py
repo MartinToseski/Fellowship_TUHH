@@ -6,7 +6,7 @@ import os
 import pickle
 
 
-DATA_PATH = "../../../data/ptb-xl/"
+DATA_PATH = "../../data/ptb-xl/"
 
 
 def load_raw_data(df, sampling_rate, path):

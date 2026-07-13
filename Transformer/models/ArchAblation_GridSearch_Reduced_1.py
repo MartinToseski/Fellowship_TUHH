@@ -67,6 +67,9 @@ class Config:
     patience: int = 10
     early_stop_threshold: float = 1e-4
     gradient_clip_val: float = 1.0
+    activation: str = "gelu"
+    loss: str = "weighted_bce"
+    norm_first: bool = True
 
 
 # ---------- LIGHTNING DATASET ----------
@@ -260,9 +263,9 @@ class ECGLitModule(pl.LightningModule):
             nhead=config.n_heads,
             dim_feedforward=config.ff_dim,
             dropout=config.dropout,
-            activation="gelu",
+            activation=config.activation,
             batch_first=True,
-            norm_first=True
+            norm_first=config.norm_first
         )
 
         self.encoder = nn.TransformerEncoder(
@@ -280,7 +283,7 @@ class ECGLitModule(pl.LightningModule):
         )
 
         # Multi-label safe metrics
-        if pos_weight is not None:
+        if config.loss == "weighted_bce":
             self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         else:
             self.loss_fn = nn.BCEWithLogitsLoss()
@@ -534,22 +537,27 @@ def run_experiment(config):
         f"_opt{config.optimizer}"
         f"_pat{config.patience}"
         f"_patt{config.early_stop_threshold}"
+        f"_wd{config.weight_decay}"
+        f"_loss{config.loss}"
+        f"_act{config.activation}"
+        f"_norm{'pre' if config.norm_first else 'post'}"
+
         f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
 
     logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
-    wandb_logger = WandbLogger(project="Transformer_Architecture_GridSearch", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
+    wandb_logger = WandbLogger(project="Arch_Ablation_GridSearch_Test", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
 
     wandb_logger.log_hyperparams(vars(config))
     num_params = sum(p.numel() for p in model.parameters())
     wandb_logger.experiment.config.update({"parameters": num_params})
 
-    wandb_logger.watch(model, log="gradients", log_freq=100)
+    wandb_logger.watch(model, log="gradients", log_freq=500)
 
-    checkpoint = ModelCheckpoint(monitor="val_f1_macro", mode="max", save_top_k=3, filename="{epoch:02d}-{val_f1_macro:.4f}-{val_auc_macro:.4f}")
+    checkpoint = ModelCheckpoint(monitor="val_f1_macro", mode="max", save_top_k=1, filename="{epoch:02d}-{val_f1_macro:.4f}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_f1_macro", mode="max", patience=config.patience, min_delta=config.early_stop_threshold, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], gradient_clip_val=config.gradient_clip_val, devices=[0])
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], gradient_clip_val=config.gradient_clip_val, devices=[1])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -572,61 +580,40 @@ def run_experiment(config):
 # ---------- GRID SEARCH ----------
 if __name__ == "__main__":
     grid = [
-        # d_model, n_layers, n_heads, ff_dim
-
-        # Small-Medium
-        {"d_model": 192, "n_layers": 4, "n_heads": 4, "ff_dim": 768},
-        {"d_model": 192, "n_layers": 6, "n_heads": 4, "ff_dim": 768},
-
-        # Medium
-        {"d_model": 256, "n_layers": 4, "n_heads": 4, "ff_dim": 1024},
-        {"d_model": 256, "n_layers": 4, "n_heads": 8, "ff_dim": 1024},
-        {"d_model": 256, "n_layers": 6, "n_heads": 8, "ff_dim": 1024},
-        {"d_model": 256, "n_layers": 8, "n_heads": 8, "ff_dim": 1024},
-
-        # Large
-        {"d_model": 384, "n_layers": 4, "n_heads": 8, "ff_dim": 1536},
-        {"d_model": 384, "n_layers": 6, "n_heads": 8, "ff_dim": 1536},
-        {"d_model": 384, "n_layers": 8, "n_heads": 8, "ff_dim": 1536},
-
-        # Very Large
-        {"d_model": 512, "n_layers": 4, "n_heads": 8, "ff_dim": 2048},
-        {"d_model": 512, "n_layers": 6, "n_heads": 8, "ff_dim": 2048},
-        {"d_model": 512, "n_layers": 8, "n_heads": 8, "ff_dim": 2048},
-
-        # FFN ratio ablation
-        {"d_model": 256, "n_layers": 6, "n_heads": 8, "ff_dim": 512},   # 2×
-        {"d_model": 256, "n_layers": 6, "n_heads": 8, "ff_dim": 1536},  # 6×
-
-        {"d_model": 384, "n_layers": 6, "n_heads": 8, "ff_dim": 768},   # 2×
-        {"d_model": 384, "n_layers": 6, "n_heads": 8, "ff_dim": 2304},  # 6×
-
-        # Width vs Depth
-        {"d_model": 384, "n_layers": 2, "n_heads": 8, "ff_dim": 1536},
-        {"d_model": 512, "n_layers": 2, "n_heads": 8, "ff_dim": 2048},
+        {
+            "pooling": "cls",
+            "positional_encoding": "learnable",
+            "loss": "weighted_bce",
+            "activation": "gelu",
+            "norm_first": True,
+        },
     ]
 
     results = []
     for params in grid:
         config = Config(
-            model_name="Architecture_GridSearch",
+            model_name="ArchAblation_GridSearch",
 
             sampling_rate=100,
             augmentation="both",
 
             batch_size=64,
-            learning_rate=3e-4,
+            learning_rate=5e-4,
             weight_decay=0.01,
+            dropout=0.1,
 
-            d_model = params["d_model"],
-            n_heads = params["n_heads"],
-            n_layers = params["n_layers"],
-            ff_dim = params["ff_dim"],
+            d_model = 384,
+            n_heads = 8,
+            n_layers = 6,
+            ff_dim = 2304,
 
-            patch_size = 5,
-            pooling = "cls",
+            patch_size = 4,
+            pooling=params["pooling"],
 
-            positional_encoding = "sinusoidal",
+            positional_encoding=params["positional_encoding"],
+            activation=params["activation"],
+            loss=params["loss"],
+            norm_first=params["norm_first"],
 
             num_classes=5,
             max_epochs=100,

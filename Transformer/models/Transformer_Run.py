@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
 from sklearn.preprocessing import MultiLabelBinarizer
-from pathlib import Path
 
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
@@ -24,8 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
-from utils.preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
-from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+from preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
+from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
@@ -53,8 +52,8 @@ class Config:
     pooling: str = "cls"
 
     positional_encoding: str = "sinusoidal"
-    warmup_epochs = 10
-    min_lr = 1e-6
+    warmup_epochs: int = 10
+    min_lr: float = 1e-6
     
     augmentation: str = "both"
     optimizer: str = "adamw"
@@ -66,6 +65,11 @@ class Config:
     patience: int = 10
     early_stop_threshold: float = 1e-4
     gradient_clip_val: float = 1.0
+
+    activation: str = "gelu"
+    loss: str = "weighted_bce"
+    norm_first: bool = True
+
 
 
 # ---------- LIGHTNING DATASET ----------
@@ -259,9 +263,9 @@ class ECGLitModule(pl.LightningModule):
             nhead=config.n_heads,
             dim_feedforward=config.ff_dim,
             dropout=config.dropout,
-            activation="gelu",
+            activation=config.activation,
             batch_first=True,
-            norm_first=True
+            norm_first=config.norm_first
         )
 
         self.encoder = nn.TransformerEncoder(
@@ -279,7 +283,7 @@ class ECGLitModule(pl.LightningModule):
         )
 
         # Multi-label safe metrics
-        if pos_weight is not None:
+        if config.loss == "weighted_bce":
             self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         else:
             self.loss_fn = nn.BCEWithLogitsLoss()
@@ -533,17 +537,21 @@ def run_experiment(config):
         f"_opt{config.optimizer}"
         f"_pat{config.patience}"
         f"_patt{config.early_stop_threshold}"
+        f"_wd{config.weight_decay}"
+        f"_loss{config.loss}"
+        f"_act{config.activation}"
+        f"_norm{'pre' if config.norm_first else 'post'}"
         f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
 
     logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
-    wandb_logger = WandbLogger(project="Transformer_Base_100epochs", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
+    wandb_logger = WandbLogger(project="ArchAblation_GridSearch", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
 
     wandb_logger.log_hyperparams(vars(config))
     num_params = sum(p.numel() for p in model.parameters())
     wandb_logger.experiment.config.update({"parameters": num_params})
 
-    wandb_logger.watch(model, log="gradients", log_freq=100)
+    wandb_logger.watch(model, log="gradients", log_freq=500)
 
     checkpoint = ModelCheckpoint(monitor="val_f1_macro", mode="max", save_top_k=1, filename="{epoch:02d}-{val_f1_macro:.4f}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_f1_macro", mode="max", patience=config.patience, min_delta=config.early_stop_threshold, verbose=True)
@@ -575,30 +583,35 @@ if __name__ == "__main__":
     
     for i in range(1):
         config = Config(
-            model_name="Transformer_Base",
+            model_name="Transformer",
 
             sampling_rate=100,
             augmentation="both",
 
             batch_size=64,
-            learning_rate=3e-4,
+            learning_rate=5e-4,
             weight_decay=0.01,
+            dropout=0.1,
 
-            d_model = 128,
-            n_heads = 4,
-            n_layers = 4,
-            ff_dim = 512,
+            d_model = 384,
+            n_heads = 8,
+            n_layers = 6,
+            ff_dim = 2304,
 
-            patch_size = 5,
-            pooling = "cls",
+            patch_size = 4,
+            pooling = "mean",
 
-            positional_encoding = "sinusoidal",
+            positional_encoding = "learnable",
+            activation="gelu",
+            loss="weighted_bce",
+            norm_first=True,
 
             num_classes=5,
             max_epochs=100,
             threshold=0.5,
+            warmup_epochs=10,
 
-            patience=10,
+            patience=15,
             early_stop_threshold=1e-4,
             gradient_clip_val=1.0
         )
@@ -615,8 +628,8 @@ if __name__ == "__main__":
         macro_AUC.append(latest["test_auc_macro"])
 
 
-print(f"Macro F1 scores : {macro_F1}")
-print(f"Macro AUC scores: {macro_AUC}")
-print()
-print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
-print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")
+    print(f"Macro F1 scores : {macro_F1}")
+    print(f"Macro AUC scores: {macro_AUC}")
+    print()
+    print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
+    print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")
