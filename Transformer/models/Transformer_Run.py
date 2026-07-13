@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
-from preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
-from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+from utils.preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
+from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
@@ -583,7 +583,7 @@ if __name__ == "__main__":
     
     for i in range(1):
         config = Config(
-            model_name="Transformer",
+            model_name="Test",
 
             sampling_rate=100,
             augmentation="both",
