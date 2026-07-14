@@ -9,7 +9,9 @@ from sklearn.metrics import f1_score
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from models.Transformer_Run import ECGLitModule, ECGDataModule, Config
+from models.Transformer_Run import ECGLitModule, Config
+from external_validation.chapman_subset_preprocessing import load_external_validation
+from sklearn.preprocessing import MultiLabelBinarizer
 
 from sklearn.metrics import accuracy_score, precision_score, f1_score, roc_auc_score, multilabel_confusion_matrix, recall_score
 
@@ -22,6 +24,18 @@ CLASS_NAMES = [
     "HYP",
 ]
 
+
+class ExternalDataset(torch.utils.data.Dataset):
+    def __init__(self, X, y):
+        self.X = torch.tensor(X, dtype=torch.float32)
+        self.y = torch.tensor(y, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+    
 
 def find_best_thresholds(probs, labels, coarse_step=0.05, fine_step=0.005, max_iterations=10, tolerance=1e-4):
     baseline_pred = probs >= 0.5
@@ -119,7 +133,7 @@ def find_best_thresholds(probs, labels, coarse_step=0.05, fine_step=0.005, max_i
     for cls, thr in zip(CLASS_NAMES, thresholds):
         print(f"{cls:6s}: {thr:.3f}")
 
-    print(f"\nValidation Macro F1: {previous_macro_f1:.4f}")
+    print(f"\nChapman Macro F1: {previous_macro_f1:.4f}")
     return thresholds
 
 
@@ -193,7 +207,7 @@ def evaluate(probs, labels, thresholds, class_names):
 
     print("\n")
     print("=" * 60)
-    print("ADAPTIVE THRESHOLD RESULTS")
+    print("CHAPMAN ADAPTIVE THRESHOLD RESULTS")
     print("=" * 60)
 
     print("\nOverall")
@@ -302,19 +316,26 @@ config = Config(
     gradient_clip_val=1.0
 )
 
-data = ECGDataModule(config)
-data.setup()
-
-model = ECGLitModule.load_from_checkpoint(checkpoint, config=config, pos_weight=data.pos_weight)
+model = ECGLitModule.load_from_checkpoint(checkpoint, config=config, pos_weight=torch.ones(config.num_classes))
 model.to(device)
 
-val_probs, val_labels = predict(model, data.val_dataloader(), device)
+X, y = load_external_validation()
+
+mlb = MultiLabelBinarizer(classes=CLASS_NAMES)
+y = mlb.fit_transform(y)
+
+loader = torch.utils.data.DataLoader(
+    ExternalDataset(X, y),
+    batch_size=config.batch_size,
+    shuffle=False,
+)
+
+val_probs, val_labels = predict(model, loader, device)
 
 best_thresholds = find_best_thresholds(val_probs, val_labels)
 print(best_thresholds)
 
-test_probs, test_labels = predict(model, data.test_dataloader(), device)
-results = evaluate(test_probs, test_labels, best_thresholds, CLASS_NAMES)
+results = evaluate(val_probs, val_labels, best_thresholds, CLASS_NAMES)
 
 print()
 print("Adaptive thresholds")

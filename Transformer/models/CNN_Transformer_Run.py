@@ -160,20 +160,189 @@ class ECGDataModule(pl.LightningDataModule):
 
 
 # ---------- TRANSFORMER MODULES ----------
+class MultiScaleBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+
+        self.b1 = nn.Sequential(
+            nn.Conv1d(channels, 42, 3, padding=1, bias=False),
+            nn.BatchNorm1d(42),
+            nn.GELU(),
+        )
+
+        self.b2 = nn.Sequential(
+            nn.Conv1d(channels, 42, 7, padding=3, bias=False),
+            nn.BatchNorm1d(42),
+            nn.GELU(),
+        )
+
+        self.b3 = nn.Sequential(
+            nn.Conv1d(channels, 44, 15, padding=7, bias=False),
+            nn.BatchNorm1d(44),
+            nn.GELU(),
+        )
+
+        self.fuse = nn.Sequential(
+            nn.Conv1d(channels, channels, kernel_size=1, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.GELU(),
+        )
+
+    def forward(self, x):
+        x = torch.cat(
+            [
+                self.b1(x),
+                self.b2(x),
+                self.b3(x),
+            ],
+            dim=1,
+        )
+
+        return self.fuse(x)
+    
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+
+        self.pool = nn.AdaptiveAvgPool1d(1)
+
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction),
+            nn.GELU(),
+            nn.Linear(channels // reduction, channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        b, c, _ = x.shape
+
+        w = self.pool(x).view(b, c)
+        w = self.fc(w).view(b, c, 1)
+
+        return x * w
+    
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+
+        self.conv1 = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=7,
+            stride=stride,
+            padding=3,
+            bias=False,
+        )
+
+        self.bn1 = nn.BatchNorm1d(out_channels)
+
+        self.conv2 = nn.Conv1d(
+            out_channels,
+            out_channels,
+            kernel_size=5,
+            padding=2,
+            bias=False,
+        )
+
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.se = SEBlock(out_channels)
+        self.activation = nn.GELU()
+
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv1d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
+                nn.BatchNorm1d(out_channels),
+            )
+        else:
+            self.shortcut = nn.Identity()
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.activation(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        out = self.se(out)
+
+        out = out + identity
+        out = self.activation(out)
+
+        return out
+
+
+class CNNStem(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.stem = nn.Sequential(
+            nn.Conv1d(
+                12,
+                64,
+                kernel_size=7,
+                padding=3,
+                bias=False,
+            ),
+            nn.BatchNorm1d(64),
+            nn.GELU(),
+        )
+
+        self.layer1 = ResidualBlock(64,128)
+        self.layer2 = ResidualBlock(128,128)
+        self.layer3 = ResidualBlock(128,128)
+
+        self.ms = MultiScaleBlock(128)
+
+    def forward(self,x):
+        x = x.transpose(1,2)
+
+        x = self.stem(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+
+        x = self.ms(x)
+
+        return x.transpose(1,2)
+    
+
+class ConvPatchEmbedding(nn.Module):
+    def __init__(self, in_channels, d_model, patch_size):
+        super().__init__()
+        self.proj = nn.Conv1d(in_channels, d_model, kernel_size=patch_size, stride=patch_size)
+
+    def forward(self,x):
+        x = x.transpose(1,2)
+        x = self.proj(x)
+        return x.transpose(1,2)
+    
+
 class PatchEmbedding(nn.Module):
     '''
         Input:
-            (batch, sequence_length, num_leads) / 
+            (batch, sequence_length, input_channels) / 
             (batch, 1000, 12)
         Output:
             (batch, num_patches, d_model)
             (batch, 200, d_model)
     '''
-    def __init__(self, patch_size, num_leads, d_model):
+    def __init__(self, patch_size, input_channels, d_model):
         super().__init__()
         self.patch_size = patch_size
-        self.num_leads = num_leads   
-        self.projection = nn.Linear(patch_size*num_leads, d_model)
+        self.input_channels = input_channels   
+        self.projection = nn.Linear(patch_size*input_channels, d_model)
 
     def forward(self, x):
         B, T, C = x.shape
@@ -228,9 +397,11 @@ class ECGLitModule(pl.LightningModule):
         assert config.d_model % config.n_heads == 0
         
         # ---------------- Transformer Architecture ----------------
-        self.patch_embedding = PatchEmbedding(
+        self.cnn_stem = CNNStem()
+
+        self.patch_embedding = ConvPatchEmbedding(
             patch_size=config.patch_size,
-            num_leads=12,
+            in_channels=128,
             d_model=config.d_model,
         )
 
@@ -327,6 +498,7 @@ class ECGLitModule(pl.LightningModule):
         self.save_hyperparameters(vars(config))
 
     def forward(self, x):
+        x = self.cnn_stem(x)
         x = self.patch_embedding(x)
 
         cls = self.cls_token.expand(x.size(0), -1, -1)
@@ -546,7 +718,7 @@ def run_experiment(config):
     )
 
     logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
-    wandb_logger = WandbLogger(project="Arch_Ablation_GridSearch_Test", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
+    wandb_logger = WandbLogger(project="CNN+Transformer", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
 
     wandb_logger.log_hyperparams(vars(config))
     num_params = sum(p.numel() for p in model.parameters())
@@ -557,7 +729,7 @@ def run_experiment(config):
     checkpoint = ModelCheckpoint(monitor="val_f1_macro", mode="max", save_top_k=1, filename="{epoch:02d}-{val_f1_macro:.4f}-{val_auc_macro:.4f}")
     early_stop = EarlyStopping(monitor="val_f1_macro", mode="max", patience=config.patience, min_delta=config.early_stop_threshold, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], gradient_clip_val=config.gradient_clip_val, devices=[1])
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], gradient_clip_val=config.gradient_clip_val, devices=[0])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -579,20 +751,12 @@ def run_experiment(config):
 
 # ---------- GRID SEARCH ----------
 if __name__ == "__main__":
-    grid = [
-        {
-            "pooling": "cls",
-            "positional_encoding": "learnable",
-            "loss": "weighted_bce",
-            "activation": "gelu",
-            "norm_first": True,
-        },
-    ]
-
-    results = []
-    for params in grid:
+    macro_F1 = []
+    macro_AUC = []
+    
+    for i in range(1):
         config = Config(
-            model_name="ArchAblation_GridSearch",
+            model_name="CNN+Transformer",
 
             sampling_rate=100,
             augmentation="both",
@@ -608,12 +772,12 @@ if __name__ == "__main__":
             ff_dim = 2304,
 
             patch_size = 4,
-            pooling=params["pooling"],
+            pooling="mean",
 
-            positional_encoding=params["positional_encoding"],
-            activation=params["activation"],
-            loss=params["loss"],
-            norm_first=params["norm_first"],
+            positional_encoding="learnable",
+            activation="gelu",
+            loss="weighted_bce",
+            norm_first=True,
 
             num_classes=5,
             max_epochs=100,
@@ -625,14 +789,21 @@ if __name__ == "__main__":
             gradient_clip_val=1.0
         )
 
-        print("=" * 80)
-        print("!!!")
-        print("NEW CONFIG:")
-        print("!!!")
-        print(config)
-        print()
-        print()
-
         metrics_path = run_experiment(config)
+
         plot_all_metrics(metrics_path)
         print_clean_report(metrics_path)
+        
+        df = pd.read_csv(metrics_path)
+        latest = df.dropna(subset=["test_acc"]).iloc[-1]
+
+        macro_F1.append(latest["test_f1_macro"])
+        macro_AUC.append(latest["test_auc_macro"])
+
+
+    print(f"Macro F1 scores : {macro_F1}")
+    print(f"Macro AUC scores: {macro_AUC}")
+    print()
+    print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
+    print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")
+

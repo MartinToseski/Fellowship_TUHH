@@ -22,9 +22,16 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+try:
+    from utils.preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
+except ModuleNotFoundError:
+    from preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
 
-from utils.preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
-from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+try:
+    from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+except ModuleNotFoundError:
+    from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
