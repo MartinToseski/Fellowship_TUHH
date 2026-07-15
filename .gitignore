@@ -22,3 +22,6 @@ FashionMNIST/logs/**/*.png
 **/logs/
 **/cache/
 **/wandb/
+
+# Data
+**.txt
