@@ -3,14 +3,16 @@ import sys
 
 import numpy as np
 import torch
+import copy
 
 from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, multilabel_confusion_matrix
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from models.Transformer_Run import ECGLitModule, Config
+from models.CNN1d.CNN1d_Run import ECGLitModule, Config
 from chapman_subset_preprocessing import load_external_validation
 
 
@@ -25,6 +27,7 @@ SUPERCLASSES = [
 
 class ExternalDataset(torch.utils.data.Dataset):
     def __init__(self, X, y):
+        X = np.transpose(X, (0, 2, 1))
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32)
 
@@ -174,46 +177,108 @@ def evaluate(probs, labels, thresholds, class_names):
     }
 
 
+def train_epoch(model, loader, optimizer, criterion, device):
+    model.train()
+    running_loss = 0
+
+    for x, y in loader:
+        x = x.to(device)
+        y = y.to(device)
+
+        optimizer.zero_grad()
+        logits = model(x)
+        loss = criterion(logits, y)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+
+    return running_loss / len(loader)
+
+
+@torch.no_grad()
+def validation_loss(model, loader, criterion, device):
+    model.eval()
+    running_loss = 0
+
+    for x, y in loader:
+        x = x.to(device)
+        y = y.to(device)
+
+        logits = model(x)
+        loss = criterion(logits, y)
+        running_loss += loss.item()
+
+    return running_loss / len(loader)
+
+
+@torch.no_grad()
+def validation_f1(model, loader, device):
+    model.eval()
+
+    probs = []
+    labels = []
+
+    for x, y in loader:
+        x = x.to(device)
+
+        logits = model(x)
+
+        probs.append(torch.sigmoid(logits).cpu().numpy())
+        labels.append(y.numpy())
+
+    probs = np.concatenate(probs)
+    labels = np.concatenate(labels)
+
+    pred = probs >= 0.5
+
+    macro_f1 = f1_score(
+        labels,
+        pred,
+        average="macro",
+        zero_division=0,
+    )
+
+    return macro_f1
+
+
 device = "cuda"
-checkpoint = Path("logs/ArchAblation_GridSearch/d384_head8_lay6_ff2304_ptch4_plmean_poslearnable_dr0.1_lr0.0005_ep100_optadamw_pat15_patt0.0001_wd0.01_lossweighted_bce_actgelu_normpre_20260713_052757/checkpoints/epoch=57-val_f1_macro=0.7221-val_auc_macro=0.9125.ckpt")
+checkpoint = Path("logs/ModernCNN/ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
 
 config = Config(
-    model_name="CNN+Transformer",
+    model_name="1dCNN_Run5",
 
     sampling_rate=100,
     augmentation="both",
 
-    batch_size=64,
-    learning_rate=5e-4,
-    weight_decay=0.01,
-    dropout=0.1,
+    batch_size=256,
+    learning_rate=1e-5,
+    weight_decay=0.0,
 
-    d_model = 384,
-    n_heads = 8,
-    n_layers = 6,
-    ff_dim = 2304,
+    kernel_size=7,
+    dropout=0.3,
 
-    patch_size = 4,
-    pooling="mean",
-
-    positional_encoding="learnable",
-    activation="gelu",
-    loss="weighted_bce",
-    norm_first=True,
+    optimizer="adam",
 
     num_classes=5,
     max_epochs=100,
-    warmup_epochs=10,
     threshold=0.5,
-
-    patience=15,
-    early_stop_threshold=1e-4,
-    gradient_clip_val=1.0
 )
 
 
+print(__file__)
+print(checkpoint)
+
 model = ECGLitModule.load_from_checkpoint(checkpoint, config=config, pos_weight=torch.ones(config.num_classes))
 model.to(device)
+
+for p in model.parameters():
+    p.requires_grad = True
+
+criterion = torch.nn.BCEWithLogitsLoss()
+optimizer = torch.optim.Adam([
+    {"params": model.features.parameters(), "lr": 1e-5},
+    {"params": model.fc.parameters(), "lr": 1e-4},
+])
 
 X, y = load_external_validation()
 print(f"External ECGs: {len(X)}")
@@ -221,10 +286,93 @@ print(f"External ECGs: {len(X)}")
 mlb = MultiLabelBinarizer(classes=SUPERCLASSES)
 y = mlb.fit_transform(y)
 
-loader = torch.utils.data.DataLoader(ExternalDataset(X, y), batch_size=64, shuffle=False)
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=22,
+)
 
-probs, labels = predict(model, loader, device)
-results = evaluate(probs, labels, thresholds=0.5, class_names=SUPERCLASSES)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train,
+    y_train,
+    test_size=0.2,
+    random_state=22,
+)
+
+train_loader = torch.utils.data.DataLoader(
+    ExternalDataset(X_train, y_train),
+    batch_size=config.batch_size,
+    shuffle=True,
+)
+
+val_loader = torch.utils.data.DataLoader(
+    ExternalDataset(X_val, y_val),
+    batch_size=config.batch_size,
+    shuffle=False,
+)
+
+test_loader = torch.utils.data.DataLoader(
+    ExternalDataset(X_test, y_test),
+    batch_size=config.batch_size,
+    shuffle=False,
+)
+
+best_f1 = -1.0
+best_state = None
+
+patience = 15
+patience_counter = 0
+improvement_threshold = 1e-4
+
+for epoch in range(config.max_epochs):
+    train_loss = train_epoch(
+        model,
+        train_loader,
+        optimizer,
+        criterion,
+        device,
+    )
+
+    val_f1 = validation_f1(
+        model,
+        val_loader,
+        device,
+    )
+
+    print(
+        f"Epoch {epoch+1:02d} | "
+        f"Train {train_loss:.4f} | "
+        f"Val {val_f1:.4f}"
+    )
+
+    if val_f1 > best_f1 + improvement_threshold:
+        best_f1 = val_f1
+        best_state = copy.deepcopy(model.state_dict())
+        patience_counter = 0
+    else:
+        patience_counter += 1
+
+    if patience_counter >= patience:
+        print(f"\nEarly stopping after {epoch+1} epochs.")
+        break
+
+
+model.load_state_dict(best_state)
+print(f"\nBest validation Macro F1: {best_f1:.4f}")
+
+probs, labels = predict(
+    model,
+    test_loader,
+    device,
+)
+
+results = evaluate(
+    probs,
+    labels,
+    thresholds=0.5,
+    class_names=SUPERCLASSES,
+)
 
 np.save("cache/chapman_probs.npy", probs)
 np.save("cache/chapman_labels.npy", labels)

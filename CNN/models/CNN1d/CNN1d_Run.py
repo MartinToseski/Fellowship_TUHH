@@ -449,8 +449,8 @@ if __name__ == "__main__":
         macro_AUC.append(latest["test_auc_macro"])
 
 
-print(f"Macro F1 scores : {macro_F1}")
-print(f"Macro AUC scores: {macro_AUC}")
-print()
-print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
-print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")
+    print(f"Macro F1 scores : {macro_F1}")
+    print(f"Macro AUC scores: {macro_AUC}")
+    print()
+    print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
+    print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")

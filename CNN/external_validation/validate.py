@@ -10,7 +10,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from models.Transformer_Run import ECGLitModule, Config
+from models.CNN1d.CNN1d_Run import ECGLitModule, Config
 from chapman_subset_preprocessing import load_external_validation
 
 
@@ -25,6 +25,7 @@ SUPERCLASSES = [
 
 class ExternalDataset(torch.utils.data.Dataset):
     def __init__(self, X, y):
+        X = np.transpose(X, (0, 2, 1))
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32)
 
@@ -175,42 +176,31 @@ def evaluate(probs, labels, thresholds, class_names):
 
 
 device = "cuda"
-checkpoint = Path("logs/ArchAblation_GridSearch/d384_head8_lay6_ff2304_ptch4_plmean_poslearnable_dr0.1_lr0.0005_ep100_optadamw_pat15_patt0.0001_wd0.01_lossweighted_bce_actgelu_normpre_20260713_052757/checkpoints/epoch=57-val_f1_macro=0.7221-val_auc_macro=0.9125.ckpt")
+checkpoint = Path("logs/ModernCNN/ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
 
 config = Config(
-    model_name="CNN+Transformer",
+    model_name="1dCNN_Run5",
 
     sampling_rate=100,
     augmentation="both",
 
-    batch_size=64,
-    learning_rate=5e-4,
-    weight_decay=0.01,
-    dropout=0.1,
+    batch_size=256,
+    learning_rate=1e-3,
+    weight_decay=0.0,
 
-    d_model = 384,
-    n_heads = 8,
-    n_layers = 6,
-    ff_dim = 2304,
+    kernel_size=7,
+    dropout=0.3,
 
-    patch_size = 4,
-    pooling="mean",
-
-    positional_encoding="learnable",
-    activation="gelu",
-    loss="weighted_bce",
-    norm_first=True,
+    optimizer="adam",
 
     num_classes=5,
-    max_epochs=100,
-    warmup_epochs=10,
+    max_epochs=50,
     threshold=0.5,
-
-    patience=15,
-    early_stop_threshold=1e-4,
-    gradient_clip_val=1.0
 )
 
+
+print(__file__)
+print(checkpoint)
 
 model = ECGLitModule.load_from_checkpoint(checkpoint, config=config, pos_weight=torch.ones(config.num_classes))
 model.to(device)
@@ -224,7 +214,7 @@ y = mlb.fit_transform(y)
 loader = torch.utils.data.DataLoader(ExternalDataset(X, y), batch_size=64, shuffle=False)
 
 probs, labels = predict(model, loader, device)
-results = evaluate(probs, labels, thresholds=0.5, class_names=SUPERCLASSES)
+results = evaluate(probs, labels, thresholds=[0.32, 0.45, 0.34, 0.45, 0.35], class_names=SUPERCLASSES)
 
 np.save("cache/chapman_probs.npy", probs)
 np.save("cache/chapman_labels.npy", labels)
