@@ -33,8 +33,8 @@ from itertools import product
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-from utils.preprocessing import split_data, per_lead_global_normalization
-from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+from preprocessing import split_data, per_lead_global_normalization
+from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]

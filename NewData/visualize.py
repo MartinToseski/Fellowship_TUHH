@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
+CHANNEL_RESOLUTION_MV = 78e-6
+
 lead1 = np.loadtxt("txt_files/V1.Session 0 - Page 1.7.TXT")
 lead2 = np.loadtxt("txt_files/V2.Session 0 - Page 1.8.TXT")
 lead3 = np.loadtxt("txt_files/V3.Session 0 - Page 1.9.TXT")
