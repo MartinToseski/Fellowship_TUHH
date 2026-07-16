@@ -17,6 +17,7 @@ CHANNEL_RESOLUTION_MV = 78e-6
 FILL_METHODS = ["zero", "mean", "duplicate", "knn", "linear_regression"]
 THRESHOLDS = np.array([0.32, 0.45, 0.34, 0.45, 0.35])
 INPUT_LENGTH = 1000
+WINDOW_RADIUS = 10
 
 device = "cuda"
 checkpoint = Path("logs/C_ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
@@ -87,8 +88,21 @@ def predict_linear_regression(chest):
     if _regression is None:
         _regression = joblib.load("cache/lead_regression.joblib")
 
-    pred = _regression.predict(chest.reshape(1, -1))
-    return pred.reshape(INPUT_LENGTH, 6)
+    chest = np.pad(
+        chest,
+        ((WINDOW_RADIUS, WINDOW_RADIUS), (0, 0)),
+        mode="reflect",
+    )
+
+    prediction = np.empty((len(chest) - 2 * WINDOW_RADIUS, 6), dtype=np.float32)
+
+    for t in range(prediction.shape[0]):
+        patch = chest[t:t + 2 * WINDOW_RADIUS + 1]
+        prediction[t] = _regression.predict(
+            patch.reshape(1, -1)
+        )[0]
+
+    return prediction
 
 
 def predict_knn(chest):
@@ -121,7 +135,7 @@ def center_crop(signal):
 def predict(signal):
     signal = normalize(signal)
     signal = np.transpose(signal, (1, 0))
-    
+
     signal = torch.tensor(
         signal,
         dtype=torch.float32,
@@ -163,6 +177,7 @@ def print_results(logits, probs, prediction, fill_method):
 
 
 for method in FILL_METHODS:
+    
     v1, v2, v3, v4, v5, v6 = load_precordial_leads("txt_files")
 
     chest = np.stack([v1, v2, v3, v4, v5, v6], axis=1)

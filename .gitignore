@@ -25,3 +25,6 @@ FashionMNIST/logs/**/*.png
 
 # Data
 **.txt
+**.TXT
+**/txt_files
+**/vis

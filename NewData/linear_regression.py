@@ -1,32 +1,56 @@
 import joblib
 import numpy as np
 
-from sklearn.multioutput import MultiOutputRegressor
 from sklearn.linear_model import Ridge
-
 from preprocessing import load_dataset
 
 
+WINDOW_RADIUS = 10          # 21-sample temporal context
+ALPHA = 1.0
+STEP = 2
+
+
+print("Loading dataset...")
 signals, _ = load_dataset(100)
+print(f"Loaded {len(signals)} ECGs")
+
 
 X = []
 Y = []
+
+print("Preparing training data...")
 
 for ecg in signals:
     chest = ecg[:, 6:12]
     limb = ecg[:, :6]
 
-    X.append(chest.reshape(-1))
-    Y.append(limb.reshape(-1))
+    # reflect padding keeps edge morphology much better than zeros
+    chest = np.pad(
+        chest,
+        ((WINDOW_RADIUS, WINDOW_RADIUS), (0, 0)),
+        mode="reflect",
+    )
 
-X = np.asarray(X)
-Y = np.asarray(Y)
+    for t in range(0, limb.shape[0], STEP):
+        patch = chest[t:t + 2 * WINDOW_RADIUS + 1]
+        X.append(patch.reshape(-1))
+        Y.append(limb[t])
 
-print("Chest:", X.shape)
-print("Limb :", Y.shape)
+X = np.asarray(X, dtype=np.float32)
+Y = np.asarray(Y, dtype=np.float32)
 
-model = MultiOutputRegressor(Ridge(alpha=1.0), n_jobs=-1)
+print("Input :", X.shape)
+print("Output:", Y.shape)
+
+print("Training Ridge...")
+
+model = Ridge(
+    alpha=ALPHA,
+    solver="lsqr",
+)
+
 model.fit(X, Y)
 
 joblib.dump(model, "cache/lead_regression.joblib")
-print("Saved linear regression.")
+
+print("Saved.")

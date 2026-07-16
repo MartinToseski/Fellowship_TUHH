@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
-METRICS = ["train_loss", "train_acc", "val_loss", "val_acc", "val_auc_macro", "val_f1_macro", "learning_rate"]
+METRICS = ["train_loss", "val_loss", "train_mae", "val_mae", "train_mse", "val_mse"]
 
 
 def print_all_sizes(comment, X_train, y_train, X_val, y_val, X_test, y_test):
