@@ -31,9 +31,16 @@ device = "cuda"
 # Lead Generator
 # ----------------------------------------------------------
 
-generator_ckpt = Path("logs/Lead_Reconstruction_CNN/dr0.3_lr0.001_rate100_epochs100_adam_20260716_142548/checkpoints/epoch=42-val_loss=0.1340.ckpt")
+generator_ckpt = Path(
+    "logs/Lead_Reconstruction_CNN/dr0.3_lr0.001_rate100_epochs100_adam_20260716_142548/checkpoints/epoch=42-val_loss=0.1340.ckpt"
+)
+
 generator_cfg = GeneratorConfig(sampling_rate=100)
-generator = Generator.load_from_checkpoint(generator_ckpt, config=generator_cfg)
+
+generator = Generator.load_from_checkpoint(
+    generator_ckpt,
+    config=generator_cfg,
+)
 
 generator.to(device)
 generator.eval()
@@ -42,7 +49,10 @@ generator.eval()
 # ----------------------------------------------------------
 # Classifier
 # ----------------------------------------------------------
-classifier_ckpt = Path("logs/C_ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
+
+classifier_ckpt = Path(
+    "logs/C_ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt"
+)
 
 classifier_cfg = ClassifierConfig(
     sampling_rate=100,
@@ -56,7 +66,11 @@ classifier_cfg = ClassifierConfig(
     max_epochs=50,
 )
 
-classifier = Classifier.load_from_checkpoint(classifier_ckpt, config=classifier_cfg)
+classifier = Classifier.load_from_checkpoint(
+    classifier_ckpt,
+    config=classifier_cfg,
+)
+
 classifier.to(device)
 classifier.eval()
 
@@ -88,111 +102,109 @@ def center_crop(signal):
     return signal[start:start + INPUT_LENGTH]
 
 
-# ----------------------------------------------------------
-# Normalization
-# ----------------------------------------------------------
+def predict_signal(chest, preprocess=True):
+    # ----------------------------------------------------------
+    # Normalization
+    # ----------------------------------------------------------
+    mean12 = np.load("cache/ptbxl_perlead_mean.npy").reshape(-1)
+    std12 = np.load("cache/ptbxl_perlead_std.npy").reshape(-1)
 
-mean12 = np.load("cache/ptbxl_perlead_mean.npy").reshape(-1)
-std12 = np.load("cache/ptbxl_perlead_std.npy").reshape(-1)
+    mean6 = mean12[6:]
+    std6 = std12[6:]
 
-mean6 = mean12[6:]
-std6 = std12[6:]
+    # ----------------------------------------------------------
+    # Generate limb leads
+    # ----------------------------------------------------------
+    if preprocess:
+        chest_norm = (chest - mean6) / std6
+    else:
+        chest_norm = chest
 
+    generator_input = torch.tensor(
+        chest_norm.T,
+        dtype=torch.float32,
+    ).unsqueeze(0).to(device)
 
-# ----------------------------------------------------------
-# Load signal
-# ----------------------------------------------------------
+    with torch.no_grad():
+        predicted_limb = generator(generator_input)
 
-chest = load_precordial("txt_files")
+    predicted_limb = predicted_limb.cpu().numpy()[0].T
 
-chest *= CHANNEL_RESOLUTION_MV
-chest = resample(chest)
-chest = center_crop(chest)
+    # ----------------------------------------------------------
+    # Build complete ECG
+    # ----------------------------------------------------------
+    ecg12 = np.concatenate(
+        [
+            predicted_limb,
+            chest,
+        ],
+        axis=1,
+    )
 
+    # ----------------------------------------------------------
+    # Normalize for classifier
+    # ----------------------------------------------------------
+    if preprocess:
+        ecg12 = (ecg12 - mean12) / std12
 
-# ----------------------------------------------------------
-# Generate limb leads
-# ----------------------------------------------------------
+    classifier_input = torch.tensor(
+        ecg12.T,
+        dtype=torch.float32,
+    ).unsqueeze(0).to(device)
 
-generator_input = (chest - mean6) / std6
+    # ----------------------------------------------------------
+    # Classification
+    # ----------------------------------------------------------
+    with torch.no_grad():
+        logits = classifier(classifier_input)
+        probs = torch.sigmoid(logits)
 
-generator_input = torch.tensor(
-    generator_input.T,
-    dtype=torch.float32,
-).unsqueeze(0).to(device)
+    logits = logits.cpu().numpy()[0]
+    probs = probs.cpu().numpy()[0]
+    prediction = probs >= THRESHOLDS
 
-with torch.no_grad():
-    predicted_limb = generator(generator_input)
-
-predicted_limb = (
-    predicted_limb
-    .cpu()
-    .numpy()[0]
-    .T
-)
-
-
-# ----------------------------------------------------------
-# Build complete ECG
-# ----------------------------------------------------------
-
-ecg12 = np.concatenate(
-    [
-        predicted_limb,
-        chest,
-    ],
-    axis=1,
-)
-
-
-# ----------------------------------------------------------
-# Normalize for classifier
-# ----------------------------------------------------------
-
-ecg12 = (ecg12 - mean12) / std12
-
-classifier_input = torch.tensor(
-    ecg12.T,
-    dtype=torch.float32,
-).unsqueeze(0).to(device)
+    return logits[None], probs[None], prediction[None]
 
 
-# ----------------------------------------------------------
-# Classification
-# ----------------------------------------------------------
+def print_results(logits, probs, prediction):
+    print()
+    print("=" * 60)
+    print("LEAD GENERATOR + CLASSIFIER")
+    print("=" * 60)
 
-with torch.no_grad():
-    logits = classifier(classifier_input)
-    probs = torch.sigmoid(logits)
+    diagnosis = []
 
-logits = logits.cpu().numpy()[0]
-probs = probs.cpu().numpy()[0]
+    for cls, p, pred in zip(SUPERCLASSES, probs, prediction):
+        print(f"{cls:6s} probability={p:.4f} predicted={bool(pred)}")
+        if pred:
+            diagnosis.append(cls)
+
+    if len(diagnosis) == 0:
+        diagnosis = ["None"]
+
+    print()
+    print("Diagnosis:")
+
+    for d in diagnosis:
+        print("-", d)
+
+    print()
+
+    for cls, logit, prob in zip(SUPERCLASSES, logits, probs):
+        print(f"{cls:6s} logit={logit:8.3f} prob={prob:.3f}")
 
 
-prediction = probs >= THRESHOLDS
+def run():
+    chest = load_precordial("txt_files")
+
+    chest *= CHANNEL_RESOLUTION_MV
+    chest = resample(chest)
+    chest = center_crop(chest)
+
+    logits, probs, prediction = predict_signal(chest)
+
+    print_results(logits, probs, prediction)
 
 
-print()
-print("=" * 60)
-print("LEAD GENERATOR + CLASSIFIER")
-print("=" * 60)
-
-diagnosis = []
-
-for cls, p, pred in zip(SUPERCLASSES, probs, prediction):
-    print(f"{cls:6s} probability={p:.4f} predicted={bool(pred)}")
-    if pred:
-        diagnosis.append(cls)
-
-if len(diagnosis) == 0:
-    diagnosis = ["None"]
-
-print("\nDiagnosis:")
-
-for d in diagnosis:
-    print("-", d)
-
-print()
-
-for cls, l, p in zip(SUPERCLASSES, logits, probs):
-    print(f"{cls:6s} logit={l:8.3f} prob={p:.3f}")
+if __name__ == "__main__":
+    run()

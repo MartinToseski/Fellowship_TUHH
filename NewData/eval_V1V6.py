@@ -61,8 +61,9 @@ def normalize(signal):
     return (signal - mean) / std
 
 
-def predict(signal):
-    signal = normalize(signal)
+def predict(signal, normalize_input=True):
+    if normalize_input:
+        signal = normalize(signal)
 
     signal = torch.tensor(
         signal.T,
@@ -79,9 +80,20 @@ def predict(signal):
     )
 
 
-def print_results(logits, probs):
-    prediction = probs >= THRESHOLDS
+def predict_signal(signal, preprocess=True):
+    if preprocess:
+        signal *= CHANNEL_RESOLUTION_MV
+        signal = resample(signal)
+        signal = center_crop(signal)
+        logits, probs = predict(signal, normalize_input=True)
+    else:
+        logits, probs = predict(signal, normalize_input=False)
 
+    prediction = probs >= THRESHOLDS
+    return logits[None], probs[None], prediction[None]
+
+
+def print_results(logits, probs, prediction):
     print()
     print("=" * 60)
     print("MODEL PREDICTION")
@@ -108,11 +120,12 @@ def print_results(logits, probs):
         print(f"{cls:6s} logit={logit:8.3f} prob={prob:.3f}")
 
 
-signal = load_precordial_leads("txt_files")
+def run():
+    signal = load_precordial_leads("txt_files")
+    logits, probs = predict_signal(signal)
+    prediction = probs >= THRESHOLDS
+    print_results(logits, probs, prediction)
 
-signal *= CHANNEL_RESOLUTION_MV
-signal = resample(signal)
-signal = center_crop(signal)
 
-logits, probs = predict(signal)
-print_results(logits, probs)
+if __name__ == "__main__":
+    run()

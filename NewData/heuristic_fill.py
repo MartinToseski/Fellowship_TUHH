@@ -36,6 +36,7 @@ config = Config(
 
 model = ECGLitModule.load_from_checkpoint(checkpoint, config=config)
 model.to(device)
+model.eval()
 
 
 def load_precordial_leads(folder):
@@ -112,7 +113,7 @@ def predict_knn(chest):
     if _knn is None:
         database = np.load("cache/knn_chest.npy")
         _knn_limb = np.load("cache/knn_limb.npy")
-        _knn = NearestNeighbors(n_neighbors=5, metric="euclidean",)
+        _knn = NearestNeighbors(n_neighbors=5, metric="euclidean")
         _knn.fit(database)
 
     query = chest.reshape(1, -1)
@@ -132,16 +133,16 @@ def center_crop(signal):
     return signal[start:end].copy()
 
 
-def predict(signal):
-    signal = normalize(signal)
-    signal = np.transpose(signal, (1, 0))
+def predict(signal, normalize_input=True):
+    if normalize_input:
+        signal = normalize(signal)
+
+    signal = signal.T
 
     signal = torch.tensor(
         signal,
         dtype=torch.float32,
     ).unsqueeze(0).to(device)
-
-    model.eval()
 
     with torch.no_grad():
         logits = model(signal)
@@ -171,29 +172,36 @@ def print_results(logits, probs, prediction, fill_method):
         print("-", d)
 
     print()
-    for cls,logit,p in zip(SUPERCLASSES, logits.cpu().numpy()[0], probs):
+    for cls, logit, p in zip(SUPERCLASSES, logits, probs):
         print(f"{cls:6s}   logit={logit:8.3f}   prob={p:.3f}")
     print()
 
 
-for method in FILL_METHODS:
-    
-    v1, v2, v3, v4, v5, v6 = load_precordial_leads("txt_files")
-
-    chest = np.stack([v1, v2, v3, v4, v5, v6], axis=1)
-    chest *= CHANNEL_RESOLUTION_MV
-    chest = resample(chest)
-    chest = center_crop(chest)
-
+def predict_method(chest, method, preprocess=True):
     signal = fill_missing_leads(chest, method)
-
-    logits, probs = predict(signal)
+    logits, probs = predict(signal, normalize_input=preprocess)
     prediction = probs >= THRESHOLDS
+    return logits[None], probs[None], prediction[None]
 
-    print_results(
-        torch.tensor(logits).unsqueeze(0),
-        probs,
-        prediction,
-        method,
-    )
-    print("-" * 60)
+
+def run_all_methods():
+    for method in FILL_METHODS:
+        v1, v2, v3, v4, v5, v6 = load_precordial_leads("txt_files")
+
+        chest = np.stack([v1, v2, v3, v4, v5, v6], axis=1)
+        chest *= CHANNEL_RESOLUTION_MV
+        chest = resample(chest)
+        chest = center_crop(chest)
+
+        logits, probs, prediction = predict_method(chest, method)
+
+        print_results(
+            logits,
+            probs,
+            prediction,
+            method,
+        )
+        print("-" * 60)
+
+if __name__ == "__main__":
+    run_all_methods()
