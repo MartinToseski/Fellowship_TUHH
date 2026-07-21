@@ -140,6 +140,7 @@ SNOMED_TO_ABBREV = dict(
 def load_raw_data(df):
     signals = []
     keep_rows = []
+    skipped_nan = 0
 
     for idx, file_name in enumerate(df["FileName"]):
         record = Path(DATA_PATH) / file_name
@@ -150,7 +151,8 @@ def load_raw_data(df):
         try:
             signal, meta = wfdb.rdsamp(str(record))
             if np.isnan(signal).any():
-                print("NaNs immediately after wfdb:", record)
+                skipped_nan += 1
+                continue
         except Exception as e:
             print(f"Skipping {record}: {e}")
             continue
@@ -169,8 +171,6 @@ def load_raw_data(df):
                 down=int(meta["fs"]),
                 axis=0,
             )
-            if np.isnan(signal).any():
-                print("NaNs after resampling:", record)
 
         if signal.shape[0] > 1000:
             signal = signal[:1000]
@@ -179,12 +179,12 @@ def load_raw_data(df):
                 (1000 - signal.shape[0], signal.shape[1]),
                 dtype=np.float32,
             )
-            if np.isnan(signal).any():
-                print("NaNs after padding:", record)
             signal = np.vstack((signal, pad))
 
         signals.append(signal.astype(np.float32))
         keep_rows.append(idx)
+
+    print(f"\nSkipped recordings with NaNs: {skipped_nan}")
 
     X = np.asarray(signals)
     Y = df.iloc[keep_rows].reset_index(drop=True)

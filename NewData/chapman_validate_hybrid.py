@@ -10,7 +10,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from models.CNN_Transformer_Run import ECGLitModule, Config
+from CNN_Transformer_Run import ECGLitModule, Config
 from chapman_preprocessing import load_external_validation
 
 

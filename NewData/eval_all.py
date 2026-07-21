@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import pandas as pd
+import time
 
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, multilabel_confusion_matrix
@@ -8,6 +9,9 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 import heuristic_fill
 import eval_V1V6
 import eval_Generator
+import eval_generator_transformer
+import eval_generator_hybrid
+import eval_lstm
 
 from CNN1d_GridSearch import ECGLitModule, ECGDataModule, Config, SUPERCLASSES
 
@@ -39,7 +43,7 @@ config = Config(
     threshold=0.5,
 )
 
-baseline = ECGLitModule.load_from_checkpoint(BASELINE_CHECKPOINT, config=config)
+baseline = ECGLitModule.load_from_checkpoint(BASELINE_CHECKPOINT, config=config, map_location=DEVICE)
 baseline.to(DEVICE)
 baseline.eval()
 
@@ -56,6 +60,13 @@ METHODS = [
     "KNN",
     "Linear Regression",
     "Generator",
+    "Generator-Transformer",
+    "Generator-Hybrid",
+    "LSTM"
+]
+
+METHODS = [
+    "LSTM",
 ]
 
 heuristic_methods = {
@@ -66,6 +77,15 @@ heuristic_methods = {
     "linear_regression": "Linear Regression",
 }
 
+timings = {
+    method: 0.0
+    for method in METHODS
+}
+
+counts = {
+    method: 0
+    for method in METHODS
+}
 
 # =============================================================================
 # RESULT STORAGE
@@ -102,6 +122,22 @@ def update_results(method, labels, probs, preds):
     results[method]["labels"].append(labels.astype(np.int32))
     results[method]["probabilities"].append(probs.astype(np.float32))
     results[method]["predictions"].append(preds.astype(np.int32))
+
+
+def timed_prediction(method, func, *args, **kwargs):
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize()
+
+    start = time.perf_counter()
+    result = func(*args, **kwargs)
+
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize()
+
+    timings[method] += time.perf_counter() - start
+    counts[method] += 1
+
+    return result
 
 
 def compute_metrics(labels, probs, preds):
@@ -188,6 +224,11 @@ def summarize_results():
         preds = np.concatenate(results[method]["predictions"], axis=0)
 
         metrics = compute_metrics(labels, probs, preds)
+        print(f"\nChecking {method}")
+        print("labels:", labels.shape)
+        print("probs :", probs.shape)
+        print("preds :", preds.shape)
+
         metrics["Method"] = method
         rows.append(metrics)
 
@@ -242,34 +283,71 @@ if __name__ == "__main__":
     for signals, labels in tqdm(test_loader):
         labels_np = labels.numpy()
 
-        _, probs, preds = predict_original(signals)
-        update_results("Original", labels_np, probs, preds)
-
         for signal, label in zip(signals, labels_np):
             signal = signal.cpu().numpy().T      # (1000,12)
             chest = signal[:, 6:]                # (1000,6)
             label = label[None]
 
-            _, probs, preds = eval_V1V6.predict_signal(
+            '''
+            _, probs, preds = timed_prediction(
+                "V1V6",
+                eval_V1V6.predict_signal,
                 chest,
                 preprocess=False,
             )
             update_results("V1V6", label, probs, preds)
 
             for method, name in heuristic_methods.items():
-                _, probs, preds = heuristic_fill.predict_method(
+                _, probs, preds = timed_prediction(
+                    name,
+                    heuristic_fill.predict_method,
                     chest,
                     method,
                     preprocess=False,
                 )
                 update_results(name, label, probs, preds)
 
-            _, probs, preds = eval_Generator.predict_signal(
+            _, probs, preds = timed_prediction(
+                "Generator",
+                eval_Generator.predict_signal,
                 chest,
                 preprocess=False,
             )
             update_results("Generator", label, probs, preds)
 
+            _, probs, preds = timed_prediction(
+                "Generator-Transformer",
+                eval_generator_transformer.predict_signal,
+                chest,
+                preprocess=False,
+            )
+            update_results("Generator-Transformer", label, probs, preds)
+
+            _, probs, preds = timed_prediction(
+                "Generator-Hybrid",
+                eval_generator_hybrid.predict_signal,
+                chest,
+                preprocess=False,
+            )
+            update_results("Generator-Hybrid", label, probs, preds)
+            '''
+
+            _, probs, preds = timed_prediction(
+                "LSTM",
+                eval_lstm.predict_signal,
+                chest,
+                preprocess=False,
+            )
+            update_results("LSTM", label, probs, preds)
+
     df = summarize_results()
 
     print("\nEvaluation complete.")
+    print("\nAverage inference time per ECG")
+    print("-" * 45)
+
+    for method in METHODS:
+        print(
+            f"{method:25s}: "
+            f"{1000 * timings[method] / counts[method]:.3f} ms"
+        )

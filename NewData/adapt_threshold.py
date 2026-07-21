@@ -5,7 +5,7 @@ import torch
 
 from sklearn.metrics import f1_score
 
-from CNN1d_V1V6 import ECGLitModule, ECGDataModule, Config
+from LSTM_Large import ECGLitModule, ECGDataModule, Config
 
 from sklearn.metrics import accuracy_score, precision_score, f1_score, roc_auc_score, multilabel_confusion_matrix, recall_score
 
@@ -252,17 +252,19 @@ def evaluate(probs, labels, thresholds, class_names):
 
 
 device = "cuda"
-checkpoint = Path("logs/V1-V6_CNN/ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260716_130204/checkpoints/epoch=8-val_auc_macro=0.9090.ckpt")
+checkpoint = Path("logs/L_hs256_nl2_dr0.3_biTrue_rate100_epochs50_lr0.0003_adam_20260708_120053/checkpoints/epoch=26-val_auc_macro=0.9249.ckpt")
 
 config = Config(
-    sampling_rate=100,
-    batch_size=256,      # doesn't affect inference much
-    learning_rate=1e-3, # not used
-    kernel_size=7,
-    dropout=0.3,
-    weight_decay=0.0,
+    model_name="BiLSTM",
+    learning_rate=3e-4,
     optimizer="adam",
-    model_name="ModernCNN_Threshold",
+    batch_size=128,
+    hidden_size=256,
+    num_layers=2,
+    bidirectional=True,
+    dropout=0.3,
+    batch_first=True,
+    augmentation=None,
     max_epochs=50
 )
 model = ECGLitModule.load_from_checkpoint(checkpoint, config=config)

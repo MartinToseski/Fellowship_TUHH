@@ -1,3 +1,18 @@
+'''
+PREPROCESSING STEPS:
+1. WFDB Format Handling                                                     ✓
+2. Sampling Rate Handling (100 or 500 Hz)                                   ✓
+    + Optional Bandpass Filter                                              -
+3. Convert SCP Codes into Binary Vector                                     ✓
+4. Signal Per-Record or Per-Lead Normalization                              ✓
+5. Class Imbalance Handling - Weighted Loss Function Tested in Grid         -                                                                                      
+6. Training/Validation/Split According to Folds                             ✓
+    (1-8 training, 9 for validation, and 10 for testing)                    -
+7. Reformat signal dimensions depending on model input requirements         ✓
+8. Data Augmentation                                                        
+'''
+
+
 import torch
 import numpy as np
 import pandas as pd
@@ -29,22 +44,26 @@ pl.seed_everything(22, workers=True)
 # ---------- CONFIG DATACLASS ----------
 @dataclass
 class Config:
-    save_dir = "./logs"
-    model_name: str = "ModernCNN"
+    save_dir = "logs"
+    model_name: str = "LSTM"
 
     sampling_rate: int = 100
     batch_size: int = 256
     learning_rate: float = 1e-3
-    weight_decay: float = 0.0
-    dropout: float = 0.2
-    kernel_size: int = 3
     
     augmentation: str = "both"
     optimizer: str = "adam"
+    threshold: float = 0.5
+    weight_decay: float = 0.0
 
     num_classes: int = 5
     max_epochs: int = 3
-    threshold: float = 0.5
+
+    hidden_size: int = 128
+    num_layers: int = 2
+    bidirectional: bool = True
+    dropout: float = 0.3
+    batch_first: bool = True
 
 
 # ---------- LIGHTNING DATASET ----------
@@ -102,15 +121,8 @@ class ECGDataModule(pl.LightningDataModule):
         # normalization
         X_train, X_val, X_test = per_lead_global_normalization(X_train, X_val, X_test)
 
-        X_train = X_train[:, :, 6:12]
-        X_val = X_val[:, :, 6:12]
-        X_test = X_test[:, :, 6:12]
-
-        # format for Conv1D (batch, channels, time)
-        X_train = np.transpose(X_train, (0, 2, 1))
-        X_val = np.transpose(X_val, (0, 2, 1))
-        X_test = np.transpose(X_test, (0, 2, 1))
-
+        # format for LSTM (batch, time, channels) -> no transpose
+        print(X_train.shape)
         self.train_dataset = ECGDataset(X_train, y_train, augmentation=self.config.augmentation)
         self.val_dataset = ECGDataset(X_val, y_val)
         self.test_dataset = ECGDataset(X_test, y_test)
@@ -150,60 +162,26 @@ class ECGLitModule(pl.LightningModule):
         self.test_probs = []
         self.test_targets = []
         
-        # ---------------- Modern CNN ----------------
-        k = config.kernel_size
-        p = k // 2
-
-        self.features = nn.Sequential(
-            # Block 1
-            nn.Conv1d(6, 64, kernel_size=7, padding=3),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(64, 64, kernel_size=k, padding=p),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-
-            nn.MaxPool1d(kernel_size=2),
-
-            # Block 2
-            nn.Conv1d(64, 128, kernel_size=k, padding=p),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(128, 128, kernel_size=k, padding=p),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-
-            nn.MaxPool1d(kernel_size=2),
-
-            # Block 3
-            nn.Conv1d(128, 256, kernel_size=k, padding=p),
-            nn.BatchNorm1d(256),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(256, 256, kernel_size=k, padding=p),
-            nn.BatchNorm1d(256),
-            nn.ReLU(inplace=True),
-
-            nn.MaxPool1d(kernel_size=2),
-
-            # Block 4
-            nn.Conv1d(256, 512, kernel_size=k, padding=p),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-
-            nn.Conv1d(512, 512, kernel_size=k, padding=p),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
+        # Build LSTM
+        self.lstm = nn.LSTM(
+            input_size=12,
+            hidden_size=config.hidden_size,
+            num_layers=config.num_layers,
+            bidirectional=config.bidirectional,
+            batch_first=config.batch_first,
+            dropout=config.dropout
         )
 
-        self.pool = nn.AdaptiveAvgPool1d(1)
         self.dropout = nn.Dropout(config.dropout)
-        self.fc = nn.Linear(512, config.num_classes)
+
+        self.fc = nn.Linear(
+            config.hidden_size * (2 if config.bidirectional else 1),
+            config.num_classes
+        )
+
+        self.loss_fn = nn.BCEWithLogitsLoss()
 
         # Multi-label safe metrics
-        self.loss_fn = nn.BCEWithLogitsLoss()
         self.train_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
 
         self.val_acc = MultilabelAccuracy(num_labels=5, threshold=config.threshold)
@@ -244,12 +222,11 @@ class ECGLitModule(pl.LightningModule):
         self.save_hyperparameters(vars(config))
 
     def forward(self, x):
-        x = self.features(x)
-        x = self.pool(x)
-        x = x.squeeze(-1)
+        output, _ = self.lstm(x)
+        x = output.mean(dim=1)
         x = self.dropout(x)
-        x = self.fc(x)
-        return x
+        logits = self.fc(x)
+        return logits
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -277,8 +254,8 @@ class ECGLitModule(pl.LightningModule):
         self.val_precision(probs, y.int())
         self.val_recall(probs, y.int())
 
-        self.log("val_loss", loss, prog_bar=True)
-        self.log("val_acc", self.val_acc, prog_bar=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val_acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
 
     def test_step(self, batch, batch_idx):
         x, y = batch
@@ -365,12 +342,11 @@ class ECGLitModule(pl.LightningModule):
         self.test_cm.reset()
 
     def configure_optimizers(self):
-        if self.config.optimizer.lower() == "adam":
-            return torch.optim.Adam(
-                self.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay
-            )
+        return torch.optim.Adam(
+            self.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay
+        )
 
 
 # ---------- LIGHTNING TRAINER ----------
@@ -379,20 +355,22 @@ def run_experiment(config):
     data = ECGDataModule(config)
 
     version = (
-        f"ks{config.kernel_size}"
+        f"hs{config.hidden_size}"
+        f"_nl{config.num_layers}"
         f"_dr{config.dropout}"
-        f"_lr{config.learning_rate}"
+        f"_bi{config.bidirectional}"
         f"_rate{config.sampling_rate}"
         f"_epochs{config.max_epochs}"
+        f"_lr{config.learning_rate}"
         f"_{config.optimizer}"
         f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
 
     logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
     checkpoint = ModelCheckpoint(monitor="val_auc_macro", mode="max", save_top_k=1, filename="{epoch}-{val_auc_macro:.4f}")
-    early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=15, min_delta=0.0001, verbose=True)
+    early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=5, min_delta=0.001, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=[1])
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=[2], gradient_clip_val=1.0)
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -402,44 +380,20 @@ def run_experiment(config):
 
 # ---------- GRID SEARCH ----------
 if __name__ == "__main__":
-    macro_F1 = []
-    macro_AUC = []
-    
-    for i in range(1):
-        config = Config(
-            model_name="V1-V6_CNN",
+    config = Config(
+        model_name="BiLSTM",
+        learning_rate=3e-4,
+        optimizer="adam",
+        batch_size=128,
+        hidden_size=256,
+        num_layers=2,
+        bidirectional=True,
+        dropout=0.3,
+        batch_first=True,
+        augmentation=None,
+        max_epochs=50
+    )
 
-            sampling_rate=100,
-            augmentation="both",
-
-            batch_size=256,
-            learning_rate=1e-3,
-            weight_decay=0.0,
-
-            kernel_size=7,
-            dropout=0.3,
-
-            optimizer="adam",
-
-            num_classes=5,
-            max_epochs=50,
-            threshold=0.5,
-        )
-
-        metrics_path = run_experiment(config)
-
-        plot_all_metrics(metrics_path)
-        print_clean_report(metrics_path)
-        
-        df = pd.read_csv(metrics_path)
-        latest = df.dropna(subset=["test_acc"]).iloc[-1]
-
-        macro_F1.append(latest["test_f1_macro"])
-        macro_AUC.append(latest["test_auc_macro"])
-
-
-    print(f"Macro F1 scores : {macro_F1}")
-    print(f"Macro AUC scores: {macro_AUC}")
-    print()
-    print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
-    print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")
+    metrics_path = run_experiment(config)
+    plot_all_metrics(metrics_path)
+    print_clean_report(metrics_path)

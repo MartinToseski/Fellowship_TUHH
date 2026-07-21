@@ -27,7 +27,7 @@ config = Config(
     max_epochs=50,
 )
 
-model = ECGLitModule.load_from_checkpoint(checkpoint, config=config)
+model = ECGLitModule.load_from_checkpoint(checkpoint, config=config, map_location=device)
 model.to(device)
 model.eval()
 

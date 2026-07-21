@@ -308,7 +308,7 @@ def run_experiment(config):
     checkpoint = ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1, filename="{epoch}-{val_loss:.4f}")
     early_stop = EarlyStopping(monitor="val_loss", mode="min", patience=15, min_delta=0.0001, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], devices=[3])
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=[logger, wandb_logger], callbacks=[checkpoint, early_stop], devices=[1])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
     

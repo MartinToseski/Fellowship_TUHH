@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
 from sklearn.preprocessing import MultiLabelBinarizer
-from pathlib import Path
-from itertools import product
 
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
@@ -23,7 +21,6 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-
 
 try:
     from utils.preprocessing import split_data, per_lead_global_normalization, per_signal_global_normalization, global_normalization
@@ -34,6 +31,7 @@ try:
     from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
 except ModuleNotFoundError:
     from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
@@ -74,9 +72,11 @@ class Config:
     patience: int = 10
     early_stop_threshold: float = 1e-4
     gradient_clip_val: float = 1.0
+
     activation: str = "gelu"
     loss: str = "weighted_bce"
     norm_first: bool = True
+
 
 
 # ---------- LIGHTNING DATASET ----------
@@ -167,189 +167,20 @@ class ECGDataModule(pl.LightningDataModule):
 
 
 # ---------- TRANSFORMER MODULES ----------
-class MultiScaleBlock(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-
-        self.b1 = nn.Sequential(
-            nn.Conv1d(channels, 42, 3, padding=1, bias=False),
-            nn.BatchNorm1d(42),
-            nn.GELU(),
-        )
-
-        self.b2 = nn.Sequential(
-            nn.Conv1d(channels, 42, 7, padding=3, bias=False),
-            nn.BatchNorm1d(42),
-            nn.GELU(),
-        )
-
-        self.b3 = nn.Sequential(
-            nn.Conv1d(channels, 44, 15, padding=7, bias=False),
-            nn.BatchNorm1d(44),
-            nn.GELU(),
-        )
-
-        self.fuse = nn.Sequential(
-            nn.Conv1d(channels, channels, kernel_size=1, bias=False),
-            nn.BatchNorm1d(channels),
-            nn.GELU(),
-        )
-
-    def forward(self, x):
-        x = torch.cat(
-            [
-                self.b1(x),
-                self.b2(x),
-                self.b3(x),
-            ],
-            dim=1,
-        )
-
-        return self.fuse(x)
-    
-
-class SEBlock(nn.Module):
-    def __init__(self, channels, reduction=16):
-        super().__init__()
-
-        self.pool = nn.AdaptiveAvgPool1d(1)
-
-        self.fc = nn.Sequential(
-            nn.Linear(channels, channels // reduction),
-            nn.GELU(),
-            nn.Linear(channels // reduction, channels),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        b, c, _ = x.shape
-
-        w = self.pool(x).view(b, c)
-        w = self.fc(w).view(b, c, 1)
-
-        return x * w
-    
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super().__init__()
-
-        self.conv1 = nn.Conv1d(
-            in_channels,
-            out_channels,
-            kernel_size=7,
-            stride=stride,
-            padding=3,
-            bias=False,
-        )
-
-        self.bn1 = nn.BatchNorm1d(out_channels)
-
-        self.conv2 = nn.Conv1d(
-            out_channels,
-            out_channels,
-            kernel_size=5,
-            padding=2,
-            bias=False,
-        )
-
-        self.bn2 = nn.BatchNorm1d(out_channels)
-        self.se = SEBlock(out_channels)
-        self.activation = nn.GELU()
-
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv1d(
-                    in_channels,
-                    out_channels,
-                    kernel_size=1,
-                    stride=stride,
-                    bias=False,
-                ),
-                nn.BatchNorm1d(out_channels),
-            )
-        else:
-            self.shortcut = nn.Identity()
-
-    def forward(self, x):
-        identity = self.shortcut(x)
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.activation(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-
-        out = self.se(out)
-
-        out = out + identity
-        out = self.activation(out)
-
-        return out
-
-
-class CNNStem(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        self.stem = nn.Sequential(
-            nn.Conv1d(
-                12,
-                64,
-                kernel_size=7,
-                padding=3,
-                bias=False,
-            ),
-            nn.BatchNorm1d(64),
-            nn.GELU(),
-        )
-
-        self.layer1 = ResidualBlock(64,128)
-        self.layer2 = ResidualBlock(128,128)
-        self.layer3 = ResidualBlock(128,128)
-
-        self.ms = MultiScaleBlock(128)
-
-    def forward(self,x):
-        x = x.transpose(1,2)
-
-        x = self.stem(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-
-        x = self.ms(x)
-
-        return x.transpose(1,2)
-    
-
-class ConvPatchEmbedding(nn.Module):
-    def __init__(self, in_channels, d_model, patch_size):
-        super().__init__()
-        self.proj = nn.Conv1d(in_channels, d_model, kernel_size=patch_size, stride=patch_size)
-
-    def forward(self,x):
-        x = x.transpose(1,2)
-        x = self.proj(x)
-        return x.transpose(1,2)
-    
-
 class PatchEmbedding(nn.Module):
     '''
         Input:
-            (batch, sequence_length, input_channels) / 
+            (batch, sequence_length, num_leads) / 
             (batch, 1000, 12)
         Output:
             (batch, num_patches, d_model)
             (batch, 200, d_model)
     '''
-    def __init__(self, patch_size, input_channels, d_model):
+    def __init__(self, patch_size, num_leads, d_model):
         super().__init__()
         self.patch_size = patch_size
-        self.input_channels = input_channels   
-        self.projection = nn.Linear(patch_size*input_channels, d_model)
+        self.num_leads = num_leads   
+        self.projection = nn.Linear(patch_size*num_leads, d_model)
 
     def forward(self, x):
         B, T, C = x.shape
@@ -404,11 +235,9 @@ class ECGLitModule(pl.LightningModule):
         assert config.d_model % config.n_heads == 0
         
         # ---------------- Transformer Architecture ----------------
-        self.cnn_stem = CNNStem()
-
-        self.patch_embedding = ConvPatchEmbedding(
+        self.patch_embedding = PatchEmbedding(
             patch_size=config.patch_size,
-            in_channels=128,
+            num_leads=12,
             d_model=config.d_model,
         )
 
@@ -505,7 +334,6 @@ class ECGLitModule(pl.LightningModule):
         self.save_hyperparameters(vars(config))
 
     def forward(self, x):
-        x = self.cnn_stem(x)
         x = self.patch_embedding(x)
 
         cls = self.cls_token.expand(x.size(0), -1, -1)
@@ -720,12 +548,11 @@ def run_experiment(config):
         f"_loss{config.loss}"
         f"_act{config.activation}"
         f"_norm{'pre' if config.norm_first else 'post'}"
-
         f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
 
     logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
-    wandb_logger = WandbLogger(project="CNN+Transformer", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
+    wandb_logger = WandbLogger(project="ArchAblation_GridSearch", entity="martintoseski13-kaunas-university-of-technology", name=version, log_model=True)
 
     wandb_logger.log_hyperparams(vars(config))
     num_params = sum(p.numel() for p in model.parameters())
@@ -763,7 +590,7 @@ if __name__ == "__main__":
     
     for i in range(1):
         config = Config(
-            model_name="CNN+Transformer",
+            model_name="Test",
 
             sampling_rate=100,
             augmentation="both",
@@ -779,17 +606,17 @@ if __name__ == "__main__":
             ff_dim = 2304,
 
             patch_size = 4,
-            pooling="mean",
+            pooling = "mean",
 
-            positional_encoding="learnable",
+            positional_encoding = "learnable",
             activation="gelu",
             loss="weighted_bce",
             norm_first=True,
 
             num_classes=5,
             max_epochs=100,
-            warmup_epochs=10,
             threshold=0.5,
+            warmup_epochs=10,
 
             patience=15,
             early_stop_threshold=1e-4,
@@ -813,4 +640,3 @@ if __name__ == "__main__":
     print()
     print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
     print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")
-
