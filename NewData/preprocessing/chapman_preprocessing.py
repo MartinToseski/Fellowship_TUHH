@@ -269,7 +269,8 @@ def load_dataset():
 
     X, Y = load_raw_data(Y)
     print("NaNs before normalization:", np.isnan(X).sum())
-    X = per_lead_external_normalization(X)
+    #X = per_lead_external_normalization(X)
+    X = per_lead_global_normalization(X)
     print("NaNs after normalization:", np.isnan(X).sum())
 
     counter = Counter()
@@ -302,6 +303,17 @@ def per_lead_external_normalization(X):
     mean = np.load(PTB_MEAN)
     std = np.load(PTB_STD)
     return (X - mean) / std
+
+
+def per_lead_global_normalization(X_train, X_val, X_test):
+    mean = X_train.mean(axis=(0,1), keepdims=True)
+    std = X_train.std(axis=(0,1), keepdims=True) + 1e-8
+
+    X_train = (X_train - mean) / std
+    X_val = (X_val - mean) / std
+    X_test = (X_test - mean) / std
+
+    return X_train, X_val, X_test
 
 
 if __name__ == "__main__":
