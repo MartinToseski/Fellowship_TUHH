@@ -1,10 +1,14 @@
 import numpy as np
 import torch
+import sys
 
 from pathlib import Path
 from scipy.signal import resample_poly
 
-from CNN1d_V1V6 import ECGLitModule, Config
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from models.CNN1d_V1V6 import ECGLitModule, Config
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]

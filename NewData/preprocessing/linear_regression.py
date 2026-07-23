@@ -2,7 +2,7 @@ import joblib
 import numpy as np
 
 from sklearn.linear_model import Ridge
-from preprocessing import load_dataset
+from preprocessing.preprocessing import load_dataset
 
 
 WINDOW_RADIUS = 10          # 21-sample temporal context

@@ -1,18 +1,4 @@
-'''
-PREPROCESSING STEPS:
-1. WFDB Format Handling                                                     ✓
-2. Sampling Rate Handling (100 or 500 Hz)                                   ✓
-    + Optional Bandpass Filter                                              -
-3. Convert SCP Codes into Binary Vector                                     ✓
-4. Signal Per-Record or Per-Lead Normalization                              ✓
-5. Class Imbalance Handling - Weighted Loss Function Tested in Grid         -                                                                                      
-6. Training/Validation/Split According to Folds                             ✓
-    (1-8 training, 9 for validation, and 10 for testing)                    -
-7. Reformat signal dimensions depending on model input requirements         ✓
-8. Data Augmentation                                                        
-'''
-
-
+import sys
 import torch
 import numpy as np
 import pandas as pd
@@ -33,8 +19,11 @@ from itertools import product
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-from preprocessing import split_data, per_lead_global_normalization
-from utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from preprocessing.preprocessing import split_data, per_lead_global_normalization
+from utils.utils import print_all_sizes, remove_empty_diagnosis, print_superclass_distribution_statistics, plot_all_metrics, print_clean_report
 
 
 SUPERCLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
@@ -44,7 +33,7 @@ pl.seed_everything(22, workers=True)
 # ---------- CONFIG DATACLASS ----------
 @dataclass
 class Config:
-    save_dir = "../logs"
+    save_dir = "./logs"
     model_name: str = "ModernCNN"
 
     sampling_rate: int = 100
@@ -117,6 +106,10 @@ class ECGDataModule(pl.LightningDataModule):
         # normalization
         X_train, X_val, X_test = per_lead_global_normalization(X_train, X_val, X_test)
 
+        X_train = X_train[:, :, 6:12]
+        X_val = X_val[:, :, 6:12]
+        X_test = X_test[:, :, 6:12]
+
         # format for Conv1D (batch, channels, time)
         X_train = np.transpose(X_train, (0, 2, 1))
         X_val = np.transpose(X_val, (0, 2, 1))
@@ -167,7 +160,7 @@ class ECGLitModule(pl.LightningModule):
 
         self.features = nn.Sequential(
             # Block 1
-            nn.Conv1d(12, 64, kernel_size=7, padding=3),
+            nn.Conv1d(6, 64, kernel_size=7, padding=3),
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
 
@@ -401,9 +394,9 @@ def run_experiment(config):
 
     logger = CSVLogger(save_dir=config.save_dir, name=config.model_name, version=version)
     checkpoint = ModelCheckpoint(monitor="val_auc_macro", mode="max", save_top_k=1, filename="{epoch}-{val_auc_macro:.4f}")
-    early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=5, min_delta=0.001, verbose=True)
+    early_stop = EarlyStopping(monitor="val_auc_macro", mode="max", patience=15, min_delta=0.0001, verbose=True)
 
-    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=1)
+    trainer = pl.Trainer(max_epochs=config.max_epochs, logger=logger, callbacks=[checkpoint, early_stop], devices=[1])
     trainer.fit(model, datamodule=data)
     trainer.test(model=model, datamodule=data, ckpt_path=checkpoint.best_model_path, verbose=False)
 
@@ -413,41 +406,44 @@ def run_experiment(config):
 
 # ---------- GRID SEARCH ----------
 if __name__ == "__main__":
-    grid = {
-        "learning_rate": [1e-3, 1e-4],
-        "batch_size": [64, 256],
-        "dropout": [0.3, 0.5],
-        "kernel_size": [3, 5, 7],
-        "weight_decay": [0.0, 1e-4]
-    }
-
-    keys = grid.keys()
-    values = grid.values()
-    combinations = list(product(*values))
-
-    results = []
-
-    for combo in combinations:
-        params = dict(zip(keys, combo))
-
+    macro_F1 = []
+    macro_AUC = []
+    
+    for i in range(1):
         config = Config(
-            model_name="ModernCNN",
-            learning_rate=params["learning_rate"],
-            batch_size=params["batch_size"],
-            dropout=params["dropout"],
-            kernel_size=params["kernel_size"],
-            weight_decay=params["weight_decay"],
-            max_epochs=50
+            model_name="V1-V6_CNN",
+
+            sampling_rate=100,
+            augmentation="both",
+
+            batch_size=256,
+            learning_rate=1e-3,
+            weight_decay=0.0,
+
+            kernel_size=7,
+            dropout=0.3,
+
+            optimizer="adam",
+
+            num_classes=5,
+            max_epochs=50,
+            threshold=0.5,
         )
 
-        print("=" * 80)
-        print("!!!")
-        print("NEW CONFIG:")
-        print("!!!")
-        print(config)
-        print()
-        print()
-
         metrics_path = run_experiment(config)
+
         plot_all_metrics(metrics_path)
         print_clean_report(metrics_path)
+        
+        df = pd.read_csv(metrics_path)
+        latest = df.dropna(subset=["test_acc"]).iloc[-1]
+
+        macro_F1.append(latest["test_f1_macro"])
+        macro_AUC.append(latest["test_auc_macro"])
+
+
+    print(f"Macro F1 scores : {macro_F1}")
+    print(f"Macro AUC scores: {macro_AUC}")
+    print()
+    print(f"Macro F1 : {np.mean(macro_F1):.4f} ± {np.std(macro_F1):.4f}")
+    print(f"Macro AUC: {np.mean(macro_AUC):.4f} ± {np.std(macro_AUC):.4f}")

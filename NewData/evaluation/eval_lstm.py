@@ -1,14 +1,18 @@
 import numpy as np
 import torch
+import sys
 
 from pathlib import Path
 from scipy.signal import resample_poly
 
-from CNN1d_LeadGenerator import ECGLitModule as Generator
-from CNN1d_LeadGenerator import Config as GeneratorConfig
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-from CNN1d_GridSearch import ECGLitModule as Classifier
-from CNN1d_GridSearch import Config as ClassifierConfig
+from models.CNN1d_LeadGenerator import ECGLitModule as Generator
+from models.CNN1d_LeadGenerator import Config as GeneratorConfig
+
+from models.LSTM_Large import ECGLitModule as Transformer
+from models.LSTM_Large import Config as TransformerConfig
 
 
 SUPERCLASSES = [
@@ -22,7 +26,7 @@ SUPERCLASSES = [
 CHANNEL_RESOLUTION_MV = 78e-6
 INPUT_LENGTH = 1000
 
-THRESHOLDS = np.array([0.32, 0.45, 0.34, 0.45, 0.35])
+THRESHOLDS = np.array([0.68,  0.53,  0.395, 0.605, 0.605])
 
 device = "cuda"
 
@@ -40,7 +44,7 @@ generator_cfg = GeneratorConfig(sampling_rate=100)
 generator = Generator.load_from_checkpoint(
     generator_ckpt,
     config=generator_cfg,
-    map_location=device
+    map_location=device,
 )
 
 generator.to(device)
@@ -51,29 +55,33 @@ generator.eval()
 # Classifier
 # ----------------------------------------------------------
 
-classifier_ckpt = Path(
-    "logs/C_ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt"
+transformer_ckpt = Path(
+    "logs/L_hs256_nl2_dr0.3_biTrue_rate100_epochs50_lr0.0003_adam_20260708_120053/checkpoints/epoch=26-val_auc_macro=0.9249.ckpt"
 )
 
-classifier_cfg = ClassifierConfig(
-    sampling_rate=100,
-    batch_size=256,
-    learning_rate=1e-3,
-    kernel_size=7,
-    dropout=0.3,
-    weight_decay=0.0,
+transformer_cfg = TransformerConfig(
+    model_name="BiLSTM",
+    learning_rate=3e-4,
     optimizer="adam",
-    model_name="ModernCNN",
-    max_epochs=50,
+    batch_size=128,
+    hidden_size=256,
+    num_layers=2,
+    bidirectional=True,
+    dropout=0.3,
+    batch_first=True,
+    augmentation=None,
+    max_epochs=50
 )
 
-classifier = Classifier.load_from_checkpoint(
-    classifier_ckpt,
-    config=classifier_cfg,
+transformer = Transformer.load_from_checkpoint(
+    transformer_ckpt,
+    config=transformer_cfg,
+    map_location=device,
+    strict=False
 )
 
-classifier.to(device)
-classifier.eval()
+transformer.to(device)
+transformer.eval()
 
 
 # ----------------------------------------------------------
@@ -148,8 +156,8 @@ def predict_signal(chest, preprocess=True):
     if preprocess:
         ecg12 = (ecg12 - mean12) / std12
 
-    classifier_input = torch.tensor(
-        ecg12.T,
+    transformer_input = torch.tensor(
+        ecg12,
         dtype=torch.float32,
     ).unsqueeze(0).to(device)
 
@@ -157,20 +165,23 @@ def predict_signal(chest, preprocess=True):
     # Classification
     # ----------------------------------------------------------
     with torch.no_grad():
-        logits = classifier(classifier_input)
+        logits = transformer(transformer_input)
         probs = torch.sigmoid(logits)
 
-    logits = logits.cpu().numpy()[0]
-    probs = probs.cpu().numpy()[0]
+    logits = logits.cpu().numpy().squeeze()
+    probs = probs.cpu().numpy().squeeze()
     prediction = probs >= THRESHOLDS
 
     return logits[None], probs[None], prediction[None]
 
 
 def print_results(logits, probs, prediction):
+    logits = np.squeeze(logits)
+    probs = np.squeeze(probs)
+    prediction = np.squeeze(prediction)
     print()
     print("=" * 60)
-    print("LEAD GENERATOR + CLASSIFIER")
+    print("LEAD GENERATOR + LSTM")
     print("=" * 60)
 
     diagnosis = []

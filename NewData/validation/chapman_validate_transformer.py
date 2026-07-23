@@ -10,8 +10,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from CNN_Transformer_Run import ECGLitModule, Config
-from chapman_preprocessing import load_external_validation
+from models.Transformer_Run import ECGLitModule, Config
+from preprocessing.chapman_preprocessing import load_external_validation
 
 
 SUPERCLASSES = [
@@ -175,10 +175,10 @@ def evaluate(probs, labels, thresholds, class_names):
 
 
 device = "cuda"
-checkpoint = Path("logs/CNN+Transformer/d384_head8_lay6_ff2304_ptch4_plmean_poslearnable_dr0.1_lr0.0005_ep100_optadamw_pat15_patt0.0001_wd0.01_lossweighted_bce_actgelu_normpre_20260714_140251/checkpoints/epoch=26-val_f1_macro=0.7395-val_auc_macro=0.9214.ckpt")
+checkpoint = Path("logs/ArchAblation_GridSearch/d384_head8_lay6_ff2304_ptch4_plmean_poslearnable_dr0.1_lr0.0005_ep100_optadamw_pat15_patt0.0001_wd0.01_lossweighted_bce_actgelu_normpre_20260713_052757/checkpoints/epoch=57-val_f1_macro=0.7221-val_auc_macro=0.9125.ckpt")
 
 config = Config(
-    model_name="CNN+Transformer",
+    model_name="Test",
 
     sampling_rate=100,
     augmentation="both",
@@ -194,17 +194,17 @@ config = Config(
     ff_dim = 2304,
 
     patch_size = 4,
-    pooling="mean",
+    pooling = "mean",
 
-    positional_encoding="learnable",
+    positional_encoding = "learnable",
     activation="gelu",
     loss="weighted_bce",
     norm_first=True,
 
     num_classes=5,
     max_epochs=100,
-    warmup_epochs=10,
     threshold=0.5,
+    warmup_epochs=10,
 
     patience=15,
     early_stop_threshold=1e-4,

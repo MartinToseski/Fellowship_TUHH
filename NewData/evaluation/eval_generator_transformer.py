@@ -1,14 +1,18 @@
 import numpy as np
 import torch
+import sys
 
 from pathlib import Path
 from scipy.signal import resample_poly
 
-from CNN1d_LeadGenerator import ECGLitModule as Generator
-from CNN1d_LeadGenerator import Config as GeneratorConfig
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-from LSTM_Large import ECGLitModule as Transformer
-from LSTM_Large import Config as TransformerConfig
+from models.CNN1d_LeadGenerator import ECGLitModule as Generator
+from models.CNN1d_LeadGenerator import Config as GeneratorConfig
+
+from models.Transformer_Run import ECGLitModule as Transformer
+from models.Transformer_Run import Config as TransformerConfig
 
 
 SUPERCLASSES = [
@@ -52,21 +56,41 @@ generator.eval()
 # ----------------------------------------------------------
 
 transformer_ckpt = Path(
-    "logs/L_hs256_nl2_dr0.3_biTrue_rate100_epochs50_lr0.0003_adam_20260708_120053/checkpoints/epoch=26-val_auc_macro=0.9249.ckpt"
+    "logs/T_d384_head8_lay6_ff2304_ptch4_plmean_poslearnable_dr0.1_lr0.0005_ep100_optadamw_pat15_patt0.0001_wd0.01_lossweighted_bce_actgelu_normpre_20260713_052757/checkpoints/epoch=57-val_f1_macro=0.7221-val_auc_macro=0.9125.ckpt"
 )
 
 transformer_cfg = TransformerConfig(
-    model_name="BiLSTM",
-    learning_rate=3e-4,
-    optimizer="adam",
-    batch_size=128,
-    hidden_size=256,
-    num_layers=2,
-    bidirectional=True,
-    dropout=0.3,
-    batch_first=True,
-    augmentation=None,
-    max_epochs=50
+    model_name="Test",
+
+    sampling_rate=100,
+    augmentation="both",
+
+    batch_size=64,
+    learning_rate=5e-4,
+    weight_decay=0.01,
+    dropout=0.1,
+
+    d_model = 384,
+    n_heads = 8,
+    n_layers = 6,
+    ff_dim = 2304,
+
+    patch_size = 4,
+    pooling = "mean",
+
+    positional_encoding = "learnable",
+    activation="gelu",
+    loss="weighted_bce",
+    norm_first=True,
+
+    num_classes=5,
+    max_epochs=100,
+    threshold=0.5,
+    warmup_epochs=10,
+
+    patience=15,
+    early_stop_threshold=1e-4,
+    gradient_clip_val=1.0
 )
 
 transformer = Transformer.load_from_checkpoint(
@@ -177,7 +201,7 @@ def print_results(logits, probs, prediction):
     prediction = np.squeeze(prediction)
     print()
     print("=" * 60)
-    print("LEAD GENERATOR + LSTM")
+    print("LEAD GENERATOR + TRANSFORMER")
     print("=" * 60)
 
     diagnosis = []

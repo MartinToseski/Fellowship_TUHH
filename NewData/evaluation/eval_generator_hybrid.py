@@ -1,14 +1,18 @@
 import numpy as np
 import torch
+import sys
 
 from pathlib import Path
 from scipy.signal import resample_poly
 
-from CNN1d_LeadGenerator import ECGLitModule as Generator
-from CNN1d_LeadGenerator import Config as GeneratorConfig
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-from CNN_Transformer_Run import ECGLitModule as Transformer
-from CNN_Transformer_Run import Config as TransformerConfig
+from models.CNN1d_LeadGenerator import ECGLitModule as Generator
+from models.CNN1d_LeadGenerator import Config as GeneratorConfig
+
+from models.CNN_Transformer_Run import ECGLitModule as Transformer
+from models.CNN_Transformer_Run import Config as TransformerConfig
 
 
 SUPERCLASSES = [

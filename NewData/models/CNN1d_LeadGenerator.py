@@ -1,3 +1,4 @@
+import sys
 import torch
 import numpy as np
 import pandas as pd
@@ -14,8 +15,11 @@ from datetime import datetime
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
-from preprocessing import split_data, per_lead_global_normalization
-from utils import plot_all_metrics
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from preprocessing.preprocessing import split_data, per_lead_global_normalization
+from utils.utils import plot_all_metrics
 
 
 pl.seed_everything(22, workers=True)

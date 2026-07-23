@@ -1,14 +1,18 @@
 import numpy as np
 import torch
+import sys
 
 from pathlib import Path
 from scipy.signal import resample_poly
 
-from CNN1d_LeadGenerator import ECGLitModule as Generator
-from CNN1d_LeadGenerator import Config as GeneratorConfig
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-from Transformer_Run import ECGLitModule as Transformer
-from Transformer_Run import Config as TransformerConfig
+from models.CNN1d_LeadGenerator import ECGLitModule as Generator
+from models.CNN1d_LeadGenerator import Config as GeneratorConfig
+
+from models.CNN1d_GridSearch import ECGLitModule as Classifier
+from models.CNN1d_GridSearch import Config as ClassifierConfig
 
 
 SUPERCLASSES = [
@@ -22,7 +26,7 @@ SUPERCLASSES = [
 CHANNEL_RESOLUTION_MV = 78e-6
 INPUT_LENGTH = 1000
 
-THRESHOLDS = np.array([0.68,  0.53,  0.395, 0.605, 0.605])
+THRESHOLDS = np.array([0.32, 0.45, 0.34, 0.45, 0.35])
 
 device = "cuda"
 
@@ -40,7 +44,7 @@ generator_cfg = GeneratorConfig(sampling_rate=100)
 generator = Generator.load_from_checkpoint(
     generator_ckpt,
     config=generator_cfg,
-    map_location=device,
+    map_location=device
 )
 
 generator.to(device)
@@ -51,53 +55,29 @@ generator.eval()
 # Classifier
 # ----------------------------------------------------------
 
-transformer_ckpt = Path(
-    "logs/T_d384_head8_lay6_ff2304_ptch4_plmean_poslearnable_dr0.1_lr0.0005_ep100_optadamw_pat15_patt0.0001_wd0.01_lossweighted_bce_actgelu_normpre_20260713_052757/checkpoints/epoch=57-val_f1_macro=0.7221-val_auc_macro=0.9125.ckpt"
+classifier_ckpt = Path(
+    "logs/C_ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt"
 )
 
-transformer_cfg = TransformerConfig(
-    model_name="Test",
-
+classifier_cfg = ClassifierConfig(
     sampling_rate=100,
-    augmentation="both",
-
-    batch_size=64,
-    learning_rate=5e-4,
-    weight_decay=0.01,
-    dropout=0.1,
-
-    d_model = 384,
-    n_heads = 8,
-    n_layers = 6,
-    ff_dim = 2304,
-
-    patch_size = 4,
-    pooling = "mean",
-
-    positional_encoding = "learnable",
-    activation="gelu",
-    loss="weighted_bce",
-    norm_first=True,
-
-    num_classes=5,
-    max_epochs=100,
-    threshold=0.5,
-    warmup_epochs=10,
-
-    patience=15,
-    early_stop_threshold=1e-4,
-    gradient_clip_val=1.0
+    batch_size=256,
+    learning_rate=1e-3,
+    kernel_size=7,
+    dropout=0.3,
+    weight_decay=0.0,
+    optimizer="adam",
+    model_name="ModernCNN",
+    max_epochs=50,
 )
 
-transformer = Transformer.load_from_checkpoint(
-    transformer_ckpt,
-    config=transformer_cfg,
-    map_location=device,
-    strict=False
+classifier = Classifier.load_from_checkpoint(
+    classifier_ckpt,
+    config=classifier_cfg,
 )
 
-transformer.to(device)
-transformer.eval()
+classifier.to(device)
+classifier.eval()
 
 
 # ----------------------------------------------------------
@@ -172,8 +152,8 @@ def predict_signal(chest, preprocess=True):
     if preprocess:
         ecg12 = (ecg12 - mean12) / std12
 
-    transformer_input = torch.tensor(
-        ecg12,
+    classifier_input = torch.tensor(
+        ecg12.T,
         dtype=torch.float32,
     ).unsqueeze(0).to(device)
 
@@ -181,23 +161,20 @@ def predict_signal(chest, preprocess=True):
     # Classification
     # ----------------------------------------------------------
     with torch.no_grad():
-        logits = transformer(transformer_input)
+        logits = classifier(classifier_input)
         probs = torch.sigmoid(logits)
 
-    logits = logits.cpu().numpy().squeeze()
-    probs = probs.cpu().numpy().squeeze()
+    logits = logits.cpu().numpy()[0]
+    probs = probs.cpu().numpy()[0]
     prediction = probs >= THRESHOLDS
 
     return logits[None], probs[None], prediction[None]
 
 
 def print_results(logits, probs, prediction):
-    logits = np.squeeze(logits)
-    probs = np.squeeze(probs)
-    prediction = np.squeeze(prediction)
     print()
     print("=" * 60)
-    print("LEAD GENERATOR + TRANSFORMER")
+    print("LEAD GENERATOR + CLASSIFIER")
     print("=" * 60)
 
     diagnosis = []

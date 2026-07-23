@@ -10,8 +10,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from CNN1d_GridSearch import ECGLitModule, Config
-from chapman_preprocessing import load_external_validation
+from models.LSTM_Large import ECGLitModule, Config
+from preprocessing.chapman_preprocessing import load_external_validation
 
 
 SUPERCLASSES = [
@@ -175,28 +175,27 @@ def evaluate(probs, labels, thresholds, class_names):
 
 
 device = "cuda"
-checkpoint = Path("logs/C_ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
+checkpoint = Path("logs/L_hs256_nl2_dr0.3_biTrue_rate100_epochs50_lr0.0003_adam_20260708_120053/checkpoints/epoch=26-val_auc_macro=0.9249.ckpt")
 
 config = Config(
-    sampling_rate=100,
-    batch_size=256,
-    learning_rate=1e-3,
-    weight_decay=0.0,
-    kernel_size=7,
-    dropout=0.3,
-    augmentation="both",
+    model_name="BiLSTM",
+    learning_rate=3e-4,
     optimizer="adam",
-    num_classes=5,
-    max_epochs=50,
-    threshold=0.5,
+    batch_size=128,
+    hidden_size=256,
+    num_layers=2,
+    bidirectional=True,
+    dropout=0.3,
+    batch_first=True,
+    augmentation=None,
+    max_epochs=50
 )
 
 
-model = ECGLitModule.load_from_checkpoint(checkpoint, config=config)
+model = ECGLitModule.load_from_checkpoint(checkpoint, config=config, strict=False)
 model.to(device)
 
 X, y = load_external_validation()
-X = np.transpose(X, (0, 2, 1))
 
 print("NaNs in X:", np.isnan(X).sum())
 print("Infs in X:", np.isinf(X).sum())
@@ -212,4 +211,4 @@ y = mlb.fit_transform(y)
 loader = torch.utils.data.DataLoader(ExternalDataset(X, y), batch_size=64, shuffle=False)
 
 probs, labels = predict(model, loader, device)
-results = evaluate(probs, labels, thresholds=[0.32, 0.45, 0.34, 0.45, 0.35], class_names=SUPERCLASSES)
+results = evaluate(probs, labels, thresholds=0.5, class_names=SUPERCLASSES)

@@ -10,8 +10,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from Transformer_Run import ECGLitModule, Config
-from chapman_preprocessing import load_external_validation
+from models.CNN1d_GridSearch import ECGLitModule, Config
+from preprocessing.chapman_preprocessing import load_external_validation
 
 
 SUPERCLASSES = [
@@ -175,47 +175,28 @@ def evaluate(probs, labels, thresholds, class_names):
 
 
 device = "cuda"
-checkpoint = Path("logs/ArchAblation_GridSearch/d384_head8_lay6_ff2304_ptch4_plmean_poslearnable_dr0.1_lr0.0005_ep100_optadamw_pat15_patt0.0001_wd0.01_lossweighted_bce_actgelu_normpre_20260713_052757/checkpoints/epoch=57-val_f1_macro=0.7221-val_auc_macro=0.9125.ckpt")
+checkpoint = Path("logs/C_ks7_dr0.3_lr0.001_rate100_epochs50_adam_20260706_102829/checkpoints/epoch=11-val_auc_macro=0.9302.ckpt")
 
 config = Config(
-    model_name="Test",
-
     sampling_rate=100,
+    batch_size=256,
+    learning_rate=1e-3,
+    weight_decay=0.0,
+    kernel_size=7,
+    dropout=0.3,
     augmentation="both",
-
-    batch_size=64,
-    learning_rate=5e-4,
-    weight_decay=0.01,
-    dropout=0.1,
-
-    d_model = 384,
-    n_heads = 8,
-    n_layers = 6,
-    ff_dim = 2304,
-
-    patch_size = 4,
-    pooling = "mean",
-
-    positional_encoding = "learnable",
-    activation="gelu",
-    loss="weighted_bce",
-    norm_first=True,
-
+    optimizer="adam",
     num_classes=5,
-    max_epochs=100,
+    max_epochs=50,
     threshold=0.5,
-    warmup_epochs=10,
-
-    patience=15,
-    early_stop_threshold=1e-4,
-    gradient_clip_val=1.0
 )
 
 
-model = ECGLitModule.load_from_checkpoint(checkpoint, config=config, strict=False)
+model = ECGLitModule.load_from_checkpoint(checkpoint, config=config)
 model.to(device)
 
 X, y = load_external_validation()
+X = np.transpose(X, (0, 2, 1))
 
 print("NaNs in X:", np.isnan(X).sum())
 print("Infs in X:", np.isinf(X).sum())
@@ -231,4 +212,4 @@ y = mlb.fit_transform(y)
 loader = torch.utils.data.DataLoader(ExternalDataset(X, y), batch_size=64, shuffle=False)
 
 probs, labels = predict(model, loader, device)
-results = evaluate(probs, labels, thresholds=0.5, class_names=SUPERCLASSES)
+results = evaluate(probs, labels, thresholds=[0.32, 0.45, 0.34, 0.45, 0.35], class_names=SUPERCLASSES)

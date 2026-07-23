@@ -1,6 +1,6 @@
 import numpy as np
 
-from preprocessing import load_dataset
+from preprocessing.preprocessing import load_dataset
 
 
 signals, _ = load_dataset(100)

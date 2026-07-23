@@ -2,12 +2,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
-
-from sklearn.metrics import f1_score
-
-from LSTM_Large import ECGLitModule, ECGDataModule, Config
+import sys
 
 from sklearn.metrics import accuracy_score, precision_score, f1_score, roc_auc_score, multilabel_confusion_matrix, recall_score
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from models.LSTM_Large import ECGLitModule, ECGDataModule, Config
 
 
 CLASS_NAMES = [

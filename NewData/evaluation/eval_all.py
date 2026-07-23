@@ -2,18 +2,23 @@ import torch
 import numpy as np
 import pandas as pd
 import time
+import sys
 
+from pathlib import Path
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, multilabel_confusion_matrix
 
-import heuristic_fill
-import eval_V1V6
-import eval_Generator
-import eval_generator_transformer
-import eval_generator_hybrid
-import eval_lstm
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-from CNN1d_GridSearch import ECGLitModule, ECGDataModule, Config, SUPERCLASSES
+import preprocessing.heuristic_fill as heuristic_fill
+import evaluation.eval_V1V6 as eval_V1V6
+import evaluation.eval_Generator as eval_Generator
+import evaluation.eval_generator_transformer as eval_generator_transformer
+import evaluation.eval_generator_hybrid as eval_generator_hybrid
+import evaluation.eval_lstm as eval_lstm
+
+from models.CNN1d_GridSearch import ECGLitModule, ECGDataModule, Config, SUPERCLASSES
 
 
 # =============================================================================
@@ -63,10 +68,6 @@ METHODS = [
     "Generator-Transformer",
     "Generator-Hybrid",
     "LSTM"
-]
-
-METHODS = [
-    "LSTM",
 ]
 
 heuristic_methods = {
@@ -288,7 +289,6 @@ if __name__ == "__main__":
             chest = signal[:, 6:]                # (1000,6)
             label = label[None]
 
-            '''
             _, probs, preds = timed_prediction(
                 "V1V6",
                 eval_V1V6.predict_signal,
@@ -330,7 +330,6 @@ if __name__ == "__main__":
                 preprocess=False,
             )
             update_results("Generator-Hybrid", label, probs, preds)
-            '''
 
             _, probs, preds = timed_prediction(
                 "LSTM",
